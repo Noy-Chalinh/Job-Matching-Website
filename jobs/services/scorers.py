@@ -8,10 +8,13 @@ class SkillScorer:
         self.embedding_service = embedding_service
         self.use_semantic = True  # Flag to disable semantic matching if it fails
 
-    def score(self, user_skills, job_skills):
+    def score(self, user_skills, job_skills, user_embeddings=None):
         """
         Hybrid scoring: exact match + semantic fallback
         Returns: Score between 0.0 and 1.0
+
+        user_embeddings: optional precomputed embeddings for the user's skills
+        (caller may compute this once per search instead of once per job)
         """
         if not job_skills:
             return 1.0  # No requirements = perfect match
@@ -34,8 +37,9 @@ class SkillScorer:
             return exact_score
 
         try:
-            # Embed user skills and unmatched job skills
-            user_embeddings = self.embedding_service.embed_batch(list(user_set))
+            # Embed user skills (unless already precomputed by the caller) and unmatched job skills
+            if user_embeddings is None:
+                user_embeddings = self.embedding_service.embed_batch(list(user_set))
             job_embeddings = self.embedding_service.embed_batch(list(unmatched_job_skills))
 
             # Compute similarity matrix
