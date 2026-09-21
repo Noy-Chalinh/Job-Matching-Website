@@ -5,6 +5,7 @@ class EmbeddingService:
 
     _instance = None
     _model = None
+    _embedding_cache = {}  # text -> embedding, shared across requests in this worker
 
     def __new__(cls):
         """Singleton pattern to ensure only one model instance"""
@@ -35,13 +36,22 @@ class EmbeddingService:
 
     def embed(self, text):
         """Embed a single text"""
-        self._load_model()
-        return EmbeddingService._model.encode(text, convert_to_numpy=True)
+        return self.embed_batch([text])[0]
 
     def embed_batch(self, texts):
-        """Embed multiple texts"""
+        """Embed multiple texts, reusing cached embeddings for text seen before"""
         self._load_model()
-        return EmbeddingService._model.encode(texts, convert_to_numpy=True)
+
+        texts = list(texts)
+        cache = EmbeddingService._embedding_cache
+        uncached = [t for t in texts if t not in cache]
+
+        if uncached:
+            new_embeddings = EmbeddingService._model.encode(uncached, convert_to_numpy=True)
+            for text, embedding in zip(uncached, new_embeddings):
+                cache[text] = embedding
+
+        return np.array([cache[t] for t in texts])
 
     def cosine_similarity(self, vec1, vec2):
         """Compute cosine similarity between two vectors"""

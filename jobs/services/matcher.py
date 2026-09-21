@@ -115,6 +115,22 @@ class JobMatcher:
 
         matches = []
 
+        # Evaluate these querysets once per search instead of once per candidate job
+        user_skill_names = [s.skill_name for s in user_profile.skills.all()]
+        user_language_data = [{
+            'name': lang.language_name,
+            'level': lang.proficiency
+        } for lang in user_profile.languages.all()]
+
+        # Precompute user skill embeddings once per search (SkillScorer falls back to
+        # computing them itself if this is None, but that would mean re-embedding the
+        # same user skills for every candidate job)
+        user_embeddings = None
+        if user_skill_names:
+            user_embeddings = self.embedding_service.embed_batch(
+                list(set(s.lower() for s in user_skill_names))
+            )
+
         for job in jobs:
             # Database format: flat dictionary
             job_skills = job.get('skills', [])
@@ -126,8 +142,9 @@ class JobMatcher:
 
             # Compute component scores
             skill_score = self.skill_scorer.score(
-                user_skills=[s.skill_name for s in user_profile.skills.all()],
-                job_skills=job_skills
+                user_skills=user_skill_names,
+                job_skills=job_skills,
+                user_embeddings=user_embeddings
             )
 
             education_score = self.education_scorer.score(
@@ -143,10 +160,7 @@ class JobMatcher:
             )
 
             language_score = self.language_scorer.score(
-                user_languages=[{
-                    'name': lang.language_name,
-                    'level': lang.proficiency
-                } for lang in user_profile.languages.all()],
+                user_languages=user_language_data,
                 job_languages=job_languages
             )
 
@@ -167,7 +181,7 @@ class JobMatcher:
 
             # Skill gap analysis
             missing_skills = self.skill_gap_analyzer.analyze(
-                user_skills=[s.skill_name for s in user_profile.skills.all()],
+                user_skills=user_skill_names,
                 job_skills=job_skills
             )
 
