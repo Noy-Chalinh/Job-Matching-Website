@@ -1,31 +1,38 @@
 """
-Management command to load job data from JSON file into the database.
+Load job data from a normalized JSON file into the database.
+
+This is a secondary, manual-import path (e.g. for a one-off migration or a
+backup file). The primary pipeline is now:
+    python manage.py scrape_camhr      # CamHR API -> raw_jobs table
+    python manage.py normalize_camhr   # raw_jobs -> jobs table (extraction)
+which stores everything directly in the database (Supabase/Postgres) and
+never touches a JSON file.
 
 Usage:
-    python manage.py load_jobs [--file path/to/file.json] [--clear]
+    python manage.py load_jobs --file path/to/file.json [--clear]
 
-Options:
-    --file: Path to JSON file (default: latest normalized data)
-    --clear: Clear existing jobs before loading
+Re-running is safe: jobs are upserted by job_id, so existing jobs are
+updated instead of duplicated.
 """
+import json
+from pathlib import Path
 
 from django.core.management.base import BaseCommand
 from django.db import transaction
+
 from jobs.models import Job
-import json
-from pathlib import Path
-from django.conf import settings
+from jobs.services.job_ingest import UPDATE_FIELDS, build_job
 
 
 class Command(BaseCommand):
-    help = 'Load job data from JSON file into the database'
+    help = 'Load job data from a normalized JSON file into the database (manual/import use only)'
 
     def add_arguments(self, parser):
         parser.add_argument(
             '--file',
             type=str,
-            help='Path to JSON file containing job data',
-            default=None
+            required=True,
+            help='Path to JSON file containing normalized job data',
         )
         parser.add_argument(
             '--clear',
@@ -34,28 +41,7 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        # Determine file path
-        if options['file']:
-            file_path = Path(options['file'])
-        else:
-            # Use latest normalized data
-            normalized_dir = Path(settings.BASE_DIR) / 'data' / 'normalized_data'
-            if not normalized_dir.exists():
-                self.stdout.write(self.style.ERROR(
-                    f'Directory not found: {normalized_dir}'
-                ))
-                return
-
-            # Find latest normalized file
-            json_files = sorted(normalized_dir.glob('camhr_normalized_*.json'))
-            if not json_files:
-                self.stdout.write(self.style.ERROR(
-                    f'No normalized job data files found in {normalized_dir}'
-                ))
-                return
-
-            file_path = json_files[-1]  # Get latest file
-
+        file_path = Path(options['file'])
         if not file_path.exists():
             self.stdout.write(self.style.ERROR(
                 f'File not found: {file_path}'
@@ -64,7 +50,6 @@ class Command(BaseCommand):
 
         self.stdout.write(f'Loading jobs from: {file_path}')
 
-        # Load JSON data
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 jobs_data = json.load(f)
@@ -79,77 +64,44 @@ class Command(BaseCommand):
             ))
             return
 
-        # Clear existing jobs if requested
-        if options['clear']:
-            deleted_count = Job.objects.count()
-            Job.objects.all().delete()
-            self.stdout.write(self.style.WARNING(
-                f'Cleared {deleted_count} existing jobs'
-            ))
-
-        # Load jobs into database
-        loaded = 0
+        # Build Job objects (last record wins for duplicate job_ids)
+        jobs = {}
         skipped = 0
-        errors = 0
+        for job_data in jobs_data:
+            job_id = job_data.get('job_id')
+            if not job_id:
+                skipped += 1
+                continue
+            job_id = str(job_id)[:50]
+            jobs[job_id] = build_job(job_id, job_data, source=job_data.get('source', 'camhr'))
 
         with transaction.atomic():
-            for job_data in jobs_data:
-                try:
-                    # Extract job ID
-                    job_id = job_data.get('job_id')
-                    if not job_id:
-                        self.stdout.write(self.style.WARNING(
-                            f'Skipping job without job_id'
-                        ))
-                        skipped += 1
-                        continue
+            if options['clear']:
+                deleted_count = Job.objects.count()
+                Job.objects.all().delete()
+                self.stdout.write(self.style.WARNING(
+                    f'Cleared {deleted_count} existing jobs'
+                ))
 
-                    # Check if job already exists
-                    if Job.objects.filter(job_id=job_id).exists():
-                        skipped += 1
-                        continue
+            existing = Job.objects.filter(job_id__in=list(jobs)).count()
+            Job.objects.bulk_create(
+                list(jobs.values()),
+                batch_size=500,
+                update_conflicts=True,
+                unique_fields=['job_id'],
+                # Never touch raw_job here: a JSON import has no RawJob to
+                # link, and this must not null out a link normalize_camhr set.
+                update_fields=[f for f in UPDATE_FIELDS if f != 'raw_job'],
+            )
 
-                    # Create job object
-                    Job.objects.create(
-                        job_id=job_data.get('job_id'),
-                        job_title=job_data.get('job_title', ''),
-                        company=job_data.get('company', ''),
-                        location=job_data.get('location', ''),
-                        industry=job_data.get('industry', ''),
-                        min_years_experience=job_data.get('min_years_experience', 0),
-                        education_level=job_data.get('education_level', ''),
-                        education_major=job_data.get('education_major', ''),
-                        skills=job_data.get('skills', []),
-                        languages=job_data.get('languages', []),
-                        raw_text=job_data.get('raw_text', ''),
-                        pubdate=job_data.get('pubdate'),
-                        expdate=job_data.get('expdate')
-                    )
-                    loaded += 1
-
-                    if loaded % 100 == 0:
-                        self.stdout.write(f'Loaded {loaded} jobs...')
-
-                except Exception as e:
-                    self.stdout.write(self.style.ERROR(
-                        f'Error loading job {job_data.get("job_id", "unknown")}: {e}'
-                    ))
-                    errors += 1
-
-        # Summary
         self.stdout.write(self.style.SUCCESS(
-            f'\n✓ Successfully loaded {loaded} jobs'
+            f'\n✓ Created {len(jobs) - existing} jobs, updated {existing} existing jobs'
         ))
         if skipped > 0:
             self.stdout.write(self.style.WARNING(
-                f'⚠ Skipped {skipped} jobs (already exist or invalid)'
-            ))
-        if errors > 0:
-            self.stdout.write(self.style.ERROR(
-                f'✗ {errors} errors occurred'
+                f'⚠ Skipped {skipped} records without job_id'
             ))
 
-        # Show total count
         total = Job.objects.count()
         self.stdout.write(self.style.SUCCESS(
             f'\nTotal jobs in database: {total}'

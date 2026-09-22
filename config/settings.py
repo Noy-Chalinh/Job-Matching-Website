@@ -87,7 +87,11 @@ DATABASE_URL = config('DATABASE_URL', default='sqlite:///db.sqlite3')
 DATABASES = {
     'default': dj_database_url.config(
         default=DATABASE_URL,
-        conn_max_age=600,
+        # Kept short because Supabase's own pooler recycles idle connections;
+        # a long-lived Django-side connection can go stale mid-request and
+        # surface as an OperationalError the health check can't catch ahead
+        # of time (it only checks before reuse, not during a query).
+        conn_max_age=60,
         conn_health_checks=True,
     )
 }

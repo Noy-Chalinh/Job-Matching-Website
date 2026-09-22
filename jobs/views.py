@@ -3,8 +3,6 @@ from django.http import HttpResponse
 from .forms import JobSearchForm
 from .services.matcher import JobMatcher
 from .models import UserProfile, UserSkill, UserLanguage, Job
-from django.db.utils import ProgrammingError
-from django.core.management import call_command
 import logging
 import traceback
 
@@ -14,15 +12,7 @@ logger = logging.getLogger(__name__)
 def search(request):
     """Display job search form"""
     try:
-        # Check if there are jobs in the database
-        try:
-            job_count = Job.objects.count()
-        except ProgrammingError:
-            logger.warning("Jobs table does not exist, running migrations...")
-            call_command('migrate', verbosity=1, interactive=False)
-            logger.info("Running load_jobs...")
-            call_command('load_jobs', verbosity=1)
-            job_count = Job.objects.count()
+        job_count = Job.objects.count()
         logger.info(f"Number of jobs in database: {job_count}")
 
         form = JobSearchForm()

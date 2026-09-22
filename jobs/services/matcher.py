@@ -1,10 +1,7 @@
-from django.conf import settings
 from django.db.models import Q, Count
 from .embeddings import EmbeddingService
 from .scorers import SkillScorer, EducationScorer, ExperienceScorer, LanguageScorer, LocationScorer
 from .skill_gap import SkillGapAnalyzer
-import json
-from pathlib import Path
 import logging
 
 logger = logging.getLogger(__name__)
@@ -21,18 +18,6 @@ class JobMatcher:
         self.language_scorer = LanguageScorer()
         self.location_scorer = LocationScorer()
         self.skill_gap_analyzer = SkillGapAnalyzer()
-
-    def _load_normalized_jobs(self):
-        """DEPRECATED: This method is no longer used - database only"""
-        raise NotImplementedError("Database-only operation - JSON fallback removed")
-        data_path = Path(settings.BASE_DIR) / "data" / "normalized_data" / "camhr_normalized_v3_20251226_180932.json"
-
-        if not data_path.exists():
-            print(f"Warning: Job data file not found at {data_path}")
-            return []
-
-        with open(data_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
 
     def _prefilter_jobs(self, user_profile, max_candidates=500):
         """
