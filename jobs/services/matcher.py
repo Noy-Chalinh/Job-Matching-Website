@@ -60,10 +60,13 @@ class JobMatcher:
         # This is more complex - we'll fetch all and filter in Python for now
         # Future optimization: Use PostgreSQL GIN index on skills JSONB field
 
+        # Only the columns actually used below - raw_text/industry/pubdate/expdate
+        # are never read again, and raw_text especially is expensive to carry
+        # around for up to max_candidates rows on a memory-constrained instance.
         jobs = list(jobs_qs.values(
-            'job_id', 'job_title', 'company', 'location', 'industry',
+            'job_id', 'job_title', 'company', 'location',
             'min_years_experience', 'education_level', 'education_major',
-            'skills', 'languages', 'raw_text', 'pubdate', 'expdate'
+            'skills', 'languages'
         ))
 
         # Filter 4: Prefer jobs with skill overlap, but don't require it
