@@ -21,6 +21,7 @@ class EnhancedEducationExtractor:
         self.llm_model = None
         self.llm_tokenizer = None
         self.llm_pipe = None
+        self.llm_load_failed = False
 
     def _load_major_taxonomy(self) -> List[str]:
         """Load list of valid majors."""
@@ -38,8 +39,10 @@ class EnhancedEducationExtractor:
             return []
 
     def _load_llm(self):
-        """Lazy load LLM model."""
-        if self.llm_pipe is None:
+        """Lazy load LLM model. Tries once per process: on failure this is
+        never retried (it would otherwise reload and fail again for every
+        job whose regex extraction comes up empty)."""
+        if self.llm_pipe is None and not self.llm_load_failed:
             device = 0 if torch.cuda.is_available() else -1
             print(f"Loading LLM model: {LLM_MODEL} on device: {'GPU' if device == 0 else 'CPU'}...")
             try:
@@ -53,7 +56,8 @@ class EnhancedEducationExtractor:
                 )
                 print("LLM model loaded successfully!")
             except Exception as e:
-                print(f"Failed to load LLM model: {e}")
+                print(f"Failed to load LLM model, disabling LLM fallback for this run: {e}")
+                self.llm_load_failed = True
 
     def extract(self, text: str) -> Dict[str, Optional[str]]:
         """Extract education level and major with enhanced accuracy."""

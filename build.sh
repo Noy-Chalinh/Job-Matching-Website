@@ -24,8 +24,8 @@ python manage.py migrate --noinput
 echo "==> Checking if jobs table was created..."
 python manage.py shell -c "from django.db import connection; cursor = connection.cursor(); cursor.execute('SELECT COUNT(*) FROM information_schema.tables WHERE table_name = %s', ['jobs']); print(f'Jobs table exists: {cursor.fetchone()[0] > 0}')"
 
-echo "==> Loading job data..."
-python manage.py load_jobs || echo "Job data loading skipped or failed"
+# Jobs are loaded manually from a local scrape:
+#   DATABASE_URL=<external db url> python manage.py load_jobs
 
 echo "==> Build completed successfully!"
 

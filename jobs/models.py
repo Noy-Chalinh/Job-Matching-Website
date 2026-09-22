@@ -1,9 +1,41 @@
 from django.db import models
 
 
+class RawJob(models.Model):
+    """Raw scraped job payload, exactly as returned by the source API.
+
+    This is the durable replacement for data/raw_data/*.json: every job the
+    scraper fetches is upserted here first, before any extraction runs.
+    """
+    source = models.CharField(max_length=50, default='camhr', db_index=True)
+    job_id = models.CharField(max_length=50, db_index=True)
+    page = models.IntegerField(null=True, blank=True)
+    raw_data = models.JSONField()  # verbatim API response for this job
+    scraped_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.source}:{self.job_id}"
+
+    class Meta:
+        db_table = 'raw_jobs'
+        ordering = ['-scraped_at']
+        constraints = [
+            models.UniqueConstraint(fields=['source', 'job_id'], name='uniq_raw_job_source_job_id'),
+        ]
+
+
 class Job(models.Model):
-    """Normalized job posting (loaded from JSON)"""
+    """Normalized job posting.
+
+    This is the durable replacement for data/normalized_data/*.json: the
+    extraction pipeline upserts directly here instead of writing a JSON file.
+    """
     job_id = models.CharField(max_length=50, unique=True, db_index=True)
+    source = models.CharField(max_length=50, default='camhr', db_index=True)
+    raw_job = models.ForeignKey(
+        RawJob, null=True, blank=True, on_delete=models.SET_NULL, related_name='normalized_jobs'
+    )
     job_title = models.CharField(max_length=200, db_index=True)
     company = models.CharField(max_length=200, blank=True)
     location = models.CharField(max_length=100, blank=True, db_index=True)
@@ -25,6 +57,7 @@ class Job(models.Model):
     pubdate = models.DateTimeField(null=True, blank=True)
     expdate = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    normalized_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
         return f"{self.job_id}: {self.job_title}"
