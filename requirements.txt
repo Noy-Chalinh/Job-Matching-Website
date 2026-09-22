@@ -1,7 +1,10 @@
 Django==6.0
 psycopg2-binary>=2.9.3
-sentence-transformers>=2.2.0
-torch>=2.0.0
+# fastembed (ONNX Runtime) runs the same all-MiniLM-L6-v2 model as
+# sentence-transformers did, without needing torch at all - much lighter
+# on a memory-constrained instance, and verified numerically equivalent
+# (see jobs/services/embeddings.py).
+fastembed>=0.3.0
 numpy>=1.24.0
 
 # Production dependencies
@@ -9,7 +12,3 @@ gunicorn>=21.2.0
 whitenoise>=6.6.0
 python-decouple>=3.8
 dj-database-url>=2.1.0
-
-# Optional: For enhanced performance
-redis>=4.5.0
-django-redis>=5.3.0

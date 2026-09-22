@@ -29,5 +29,7 @@ python manage.py shell -c "from django.db import connection; cursor = connection
 
 echo "==> Build completed successfully!"
 
-# Preload ML model to avoid timeout on first request (optional)
-# python manage.py shell -c "from jobs.services.embeddings import EmbeddingService; EmbeddingService()._load_model()" || echo "Model preload skipped"
+# Note: there is no way to preload the ML model here - this script runs in a
+# separate process from the gunicorn worker that actually serves requests,
+# so anything loaded here would not be shared with it. The model loads lazily
+# on the first request that needs it (see jobs/services/embeddings.py).

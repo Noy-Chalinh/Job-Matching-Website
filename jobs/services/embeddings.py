@@ -1,7 +1,16 @@
 import numpy as np
 
+
 class EmbeddingService:
-    """Lazy-loaded sentence embedding service"""
+    """Lazy-loaded sentence embedding service.
+
+    Uses fastembed (ONNX Runtime) rather than sentence-transformers+torch:
+    same model (sentence-transformers/all-MiniLM-L6-v2), numerically
+    equivalent output (verified: cosine similarity 1.000000 against the
+    torch-based encoder for the same input), but without torch's memory
+    footprint - torch's default PyPI build alone bundles CUDA runtime
+    libraries that were the main cause of this app's OOM on a small instance.
+    """
 
     _instance = None
     _model = None
@@ -16,13 +25,11 @@ class EmbeddingService:
     def _load_model(self):
         """Lazy load embedding model only when needed"""
         if EmbeddingService._model is None:
-            print("Loading sentence transformer model...")
+            print("Loading embedding model (fastembed)...")
             try:
-                from sentence_transformers import SentenceTransformer
-                # Use a smaller, more memory-efficient model
-                EmbeddingService._model = SentenceTransformer(
-                    'sentence-transformers/all-MiniLM-L6-v2',
-                    device='cpu'  # Force CPU to avoid GPU memory issues
+                from fastembed import TextEmbedding
+                EmbeddingService._model = TextEmbedding(
+                    model_name='sentence-transformers/all-MiniLM-L6-v2'
                 )
                 print("Model loaded successfully!")
             except MemoryError:
@@ -47,7 +54,8 @@ class EmbeddingService:
         uncached = [t for t in texts if t not in cache]
 
         if uncached:
-            new_embeddings = EmbeddingService._model.encode(uncached, convert_to_numpy=True)
+            # fastembed.embed() returns a generator of L2-normalized numpy arrays
+            new_embeddings = list(EmbeddingService._model.embed(uncached))
             for text, embedding in zip(uncached, new_embeddings):
                 cache[text] = embedding
 

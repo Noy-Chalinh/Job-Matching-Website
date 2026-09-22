@@ -9,7 +9,10 @@ bind = f"0.0.0.0:{os.getenv('PORT', '10000')}"
 # Worker configuration
 workers = 1  # Use only 1 worker to save memory (ML models are heavy)
 worker_class = "sync"
-threads = 2  # Use threads instead of multiple workers
+# 1, not 2: two concurrent requests each doing model-load + 500-candidate
+# scoring roughly doubles peak memory, which is what OOM-killed the worker
+# on Render's free (512MB) tier. Serializing requests costs latency, not RAM.
+threads = 1
 
 # Timeout settings (ML model loading can take time)
 timeout = 300  # 5 minutes for workers to respond (model loading on first request)
