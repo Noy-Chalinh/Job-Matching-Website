@@ -1,4 +1,5 @@
 from django.db import models
+from pgvector.django import VectorField
 
 
 class RawJob(models.Model):
@@ -76,7 +77,7 @@ class SkillEmbedding(models.Model):
     """
     skill = models.CharField(max_length=255, unique=True)
     vector = models.JSONField()  # list[float], length == dim, L2-normalized
-    model_name = models.CharField(max_length=100, default='sentence-transformers/all-MiniLM-L6-v2')
+    model_name = models.CharField(max_length=100, default='BAAI/bge-small-en-v1.5')
     dim = models.PositiveSmallIntegerField(default=384)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -86,6 +87,35 @@ class SkillEmbedding(models.Model):
 
     class Meta:
         db_table = 'skill_embeddings'
+
+
+class JobEmbedding(models.Model):
+    """One full-text (job_title + raw_text) embedding per job, for semantic
+    search via pgvector - see jobs.services.matcher for how this is queried
+    and jobs/management/commands/backfill_job_embeddings.py for how it's
+    populated offline. Unlike SkillEmbedding (cached per distinct skill
+    string, shared across jobs), this is one row per job.
+
+    Postgres-only in practice: `vector`'s db_type() is backend-agnostic so
+    this table can still be created on SQLite local dev, but its HNSW index
+    (added via a separate migration gated on connection.vendor - see
+    jobs/migrations) and any ANN query against it only work on Postgres.
+    Code that queries this table must check connection.vendor == 'postgresql'
+    first and skip semantic job search otherwise (mirrors matcher.py's
+    existing use_semantic fallback for skill scoring).
+    """
+    job = models.OneToOneField(Job, on_delete=models.CASCADE, related_name='embedding')
+    vector = VectorField(dimensions=384)
+    model_name = models.CharField(max_length=100, default='BAAI/bge-small-en-v1.5')
+    dim = models.PositiveSmallIntegerField(default=384)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"embedding for {self.job_id}"
+
+    class Meta:
+        db_table = 'job_embeddings'
 
 
 # Temporary models for matching (not stored in database)

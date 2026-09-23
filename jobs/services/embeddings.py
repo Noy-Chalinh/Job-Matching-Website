@@ -12,6 +12,13 @@ from django.conf import settings
 # during build.sh instead, off the request path.
 FASTEMBED_CACHE_DIR = str(settings.BASE_DIR / 'models' / 'fastembed_cache')
 
+# BGE's recommended prefix for the query side of asymmetric search (a short
+# query embedded for comparison against long passages). Apply only to the
+# user's synthesized query text before embedding it against JobEmbedding
+# vectors - never to the job passages themselves, and never to the
+# symmetric short-phrase skill-vs-skill comparisons in scorers.py.
+BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
+
 
 def normalize_skill(text):
     """Canonical key for the skill-embedding cache/table: lowercase, collapse
@@ -29,11 +36,17 @@ class EmbeddingService:
     """Lazy-loaded sentence embedding service.
 
     Uses fastembed (ONNX Runtime) rather than sentence-transformers+torch:
-    same model (sentence-transformers/all-MiniLM-L6-v2), numerically
-    equivalent output (verified: cosine similarity 1.000000 against the
-    torch-based encoder for the same input), but without torch's memory
+    same model (BAAI/bge-small-en-v1.5), numerically equivalent output to
+    the torch-based encoder for the same input, but without torch's memory
     footprint - torch's default PyPI build alone bundles CUDA runtime
     libraries that were the main cause of this app's OOM on a small instance.
+
+    BGE models are trained for asymmetric query/passage retrieval and
+    officially recommend prefixing the *query* side (never the passage/
+    document side) with BGE_QUERY_PREFIX for asymmetric search. The skill-
+    to-skill comparisons in scorers.py are symmetric short-phrase matching
+    and must stay unprefixed; only job-level full-text search (JobEmbedding)
+    is asymmetric and should apply the prefix to the user's query text.
 
     Embeddings are cached in three tiers, checked in order:
       L1: _embedding_cache, an in-process dict - free, but wiped on every
@@ -51,7 +64,7 @@ class EmbeddingService:
     _embedding_cache = {}  # normalized skill -> embedding, shared across requests in this worker
     _l2_warmed = False
 
-    MODEL_NAME = 'sentence-transformers/all-MiniLM-L6-v2'
+    MODEL_NAME = 'BAAI/bge-small-en-v1.5'
     DIM = 384
 
     def __new__(cls):

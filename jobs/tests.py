@@ -1,7 +1,7 @@
 from django.test import TestCase
 
 from jobs.models import Job, UserLanguage, UserProfile, UserSkill
-from jobs.services.matcher import JobMatcher
+from jobs.services.matcher import CATEGORY_WEIGHTS, JobMatcher
 
 
 class _StubManager:
@@ -49,18 +49,26 @@ class MatchScoreWeightingTests(TestCase):
             skills=['python', 'django'], languages=[{'name': 'english', 'level': 'good'}],
         )
         [match] = self.matcher.match(self.profile, top_n=1)
+        # No JobEmbedding row exists for this job in these tests, so
+        # job_semantic has no data and is excluded from the weighted
+        # average regardless of backend - same renormalization rule as
+        # every other category here.
+        total_weight = sum(CATEGORY_WEIGHTS.values()) - CATEGORY_WEIGHTS['job_semantic']
         expected = (
-            match['skill_score'] * 0.60 + match['education_score'] * 0.20 +
-            match['experience_score'] * 0.15 + match['language_score'] * 0.03 +
-            match['location_score'] * 0.02
-        )
+            match['skill_score'] * CATEGORY_WEIGHTS['skill'] +
+            match['education_score'] * CATEGORY_WEIGHTS['education'] +
+            match['experience_score'] * CATEGORY_WEIGHTS['experience'] +
+            match['language_score'] * CATEGORY_WEIGHTS['language'] +
+            match['location_score'] * CATEGORY_WEIGHTS['location']
+        ) / total_weight
         self.assertAlmostEqual(match['match_score'], expected, places=6)
 
     def test_only_location_populated_forces_zero_skill_credit(self):
         """A job with no listed skills must not be able to reach a high
         match_score purely via an unrelated category (e.g. exact location) -
-        skill_score is forced to 0 and always counted at its full 60%
-        weight, so even an exact location match can't push this above ~3%."""
+        skill_score is forced to 0 and always counted at its full weight
+        (see CATEGORY_WEIGHTS), so even an exact location match can't push
+        this above ~5%."""
         Job.objects.create(
             job_id='empty-1', job_title='Personal Driver', location='phnom penh',
             min_years_experience=0, education_level='', education_major='',
@@ -68,8 +76,8 @@ class MatchScoreWeightingTests(TestCase):
         )
         [match] = self.matcher.match(self.profile, top_n=1)
         self.assertEqual(match['skill_score'], 0.0)
-        total_weight = 0.60 + 0.02  # skill (forced) + location only
-        expected = (0.0 * 0.60 + match['location_score'] * 0.02) / total_weight
+        total_weight = CATEGORY_WEIGHTS['skill'] + CATEGORY_WEIGHTS['location']  # skill (forced) + location only
+        expected = (0.0 * CATEGORY_WEIGHTS['skill'] + match['location_score'] * CATEGORY_WEIGHTS['location']) / total_weight
         self.assertAlmostEqual(match['match_score'], expected, places=6)
         self.assertLess(match['match_score'], 0.05)
 
@@ -80,8 +88,11 @@ class MatchScoreWeightingTests(TestCase):
             skills=['python', 'django'], languages=[],
         )
         [match] = self.matcher.match(self.profile, top_n=1)
-        total_weight = 0.60 + 0.02  # skill + location only
-        expected = (match['skill_score'] * 0.60 + match['location_score'] * 0.02) / total_weight
+        total_weight = CATEGORY_WEIGHTS['skill'] + CATEGORY_WEIGHTS['location']  # skill + location only
+        expected = (
+            match['skill_score'] * CATEGORY_WEIGHTS['skill'] +
+            match['location_score'] * CATEGORY_WEIGHTS['location']
+        ) / total_weight
         self.assertAlmostEqual(match['match_score'], expected, places=6)
 
     def test_real_skill_overlap_outranks_empty_skill_location_match(self):

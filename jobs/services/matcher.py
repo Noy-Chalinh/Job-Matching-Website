@@ -1,5 +1,6 @@
+from django.db import connection
 from django.db.models import Q, Count
-from .embeddings import EmbeddingService
+from .embeddings import EmbeddingService, BGE_QUERY_PREFIX
 from .scorers import SkillScorer, EducationScorer, ExperienceScorer, LanguageScorer, LocationScorer
 from .skill_gap import SkillGapAnalyzer
 import logging
@@ -12,12 +13,16 @@ logger = logging.getLogger(__name__)
 # counted at its scorer's "no data" fallback value of 1.0 - a job that never
 # mentions education, for example, should not be treated as a perfect
 # education match just because it has nothing to disqualify a candidate on.
+# job_semantic follows the same rule: excluded whenever a job has no
+# JobEmbedding row (mid-backfill, embedding failure, or non-Postgres), never
+# defaulted to 1.0 or 0.0.
 CATEGORY_WEIGHTS = {
-    'skill': 0.60,
-    'education': 0.20,
-    'experience': 0.15,
-    'language': 0.03,
-    'location': 0.02,
+    'skill': 0.50,
+    'job_semantic': 0.15,
+    'education': 0.18,
+    'experience': 0.14,
+    'language': 0.02,
+    'location': 0.01,
 }
 
 
@@ -33,10 +38,49 @@ class JobMatcher:
         self.location_scorer = LocationScorer()
         self.skill_gap_analyzer = SkillGapAnalyzer()
 
-    def _prefilter_jobs(self, user_profile, max_candidates=500):
+    def _build_query_vector(self, user_profile):
+        """Embed a synthesized query string for ANN job search over
+        JobEmbedding (full job_title + raw_text) via pgvector.
+
+        There's no free-text resume field today (jobs/forms.py only has
+        current_job_title, comma-separated skills, education_level/major) -
+        this approximates one from those structured fields. Prefixed with
+        BGE_QUERY_PREFIX since this is the asymmetric query side (a short
+        query compared against long job passages), unlike the symmetric
+        skill-vs-skill comparisons in SkillScorer.
+
+        Returns None - meaning "skip semantic job search for this search" -
+        on a non-Postgres connection, an empty profile, or any embedding
+        failure, mirroring this app's existing graceful-degradation
+        convention (e.g. SkillScorer.use_semantic).
+        """
+        if connection.vendor != 'postgresql':
+            return None
+
+        skill_names = [s.skill_name for s in user_profile.skills.all()]
+        parts = []
+        if user_profile.current_job_title:
+            parts.append(user_profile.current_job_title)
+        if skill_names:
+            parts.append(f"Skills: {', '.join(skill_names)}")
+        if user_profile.education_major:
+            parts.append(user_profile.education_major)
+        if not parts:
+            return None
+
+        try:
+            return self.embedding_service.embed(BGE_QUERY_PREFIX + '. '.join(parts))
+        except Exception as e:
+            logger.warning(f"Query embedding for semantic job search failed: {e}")
+            return None
+
+    def _prefilter_jobs(self, user_profile, max_candidates=500, query_vector=None):
         """
         Pre-filter jobs from database to reduce matching workload
-        Returns: QuerySet of filtered Job objects
+        Returns: (list of job dicts, {job_id: job_semantic_score} for jobs
+        that were ANN-ranked; empty if query_vector is None or no
+        JobEmbedding rows matched, in which case candidates fall back to the
+        skill-overlap ordering below)
         """
         from jobs.models import Job
 
@@ -69,6 +113,39 @@ class JobMatcher:
         jobs_qs = Job.objects.filter(query) if query else Job.objects.all()
         jobs_after_db_filter = jobs_qs.count()
         logger.info(f"Jobs after database filters: {jobs_after_db_filter}")
+
+        # Semantic candidate selection: rank the DB-filtered jobs by real
+        # relevance (cosine distance over full job_title + raw_text) instead
+        # of the skill-overlap-then-arbitrary-order fallback below, so the
+        # max_candidates cap isn't just "whatever the query returned first".
+        # Falls through to the fallback if there's no query vector (non-
+        # Postgres, empty profile, embedding failure) or no job has been
+        # backfilled with an embedding yet.
+        if query_vector is not None:
+            from pgvector.django import CosineDistance
+            from jobs.models import JobEmbedding
+
+            ann_rows = list(
+                JobEmbedding.objects.filter(job__in=jobs_qs)
+                .annotate(distance=CosineDistance('vector', query_vector))
+                .order_by('distance')
+                .values_list('job__job_id', 'distance')[:max_candidates]
+            )
+            if ann_rows:
+                semantic_scores = {
+                    job_id: max(0.0, 1.0 - float(distance)) for job_id, distance in ann_rows
+                }
+                jobs_by_id = {
+                    j['job_id']: j for j in Job.objects.filter(job_id__in=semantic_scores).values(
+                        'job_id', 'job_title', 'company', 'location',
+                        'min_years_experience', 'education_level', 'education_major',
+                        'skills', 'languages'
+                    )
+                }
+                # Preserve ANN rank order (values(job_id__in=...) doesn't).
+                jobs = [jobs_by_id[jid] for jid, _ in ann_rows if jid in jobs_by_id]
+                logger.info(f"Selected {len(jobs)} candidates via pgvector ANN ranking")
+                return jobs, semantic_scores
 
         # Filter 3: Skill overlap (using PostgreSQL JSONB containment)
         # This is more complex - we'll fetch all and filter in Python for now
@@ -104,16 +181,21 @@ class JobMatcher:
         
         logger.info(f"Total jobs after all filters: {len(jobs)}")
 
-        # Limit to max_candidates
-        return jobs[:max_candidates]
+        # Limit to max_candidates. No ANN scores in this fallback path.
+        return jobs[:max_candidates], {}
 
     def match(self, user_profile, top_n=20):
         """
         Match user profile against jobs from database only
         Returns: List of job matches sorted by score
         """
-        # Get candidate jobs from database
-        jobs = self._prefilter_jobs(user_profile, max_candidates=500)
+        # Get candidate jobs from database, ranked by pgvector ANN
+        # similarity when available (see _build_query_vector/_prefilter_jobs),
+        # else by the skill-overlap fallback.
+        query_vector = self._build_query_vector(user_profile)
+        jobs, semantic_scores = self._prefilter_jobs(
+            user_profile, max_candidates=500, query_vector=query_vector
+        )
 
         matches = []
 
@@ -195,7 +277,9 @@ class JobMatcher:
                 willing_to_relocate=user_profile.willing_to_relocate
             )
 
-            # Skill is the core signal for this product (60% weight) - unlike
+            job_semantic_score = semantic_scores.get(job['job_id'])
+
+            # Skill is the core signal for this product (50% weight) - unlike
             # the other categories, a job with no listed skills provides zero
             # evidence of relevance, and must not be treated as a perfect
             # match (SkillScorer.prepare's own 1.0 shortcut) nor excluded
@@ -210,11 +294,14 @@ class JobMatcher:
             if not job_skills:
                 skill_score = 0.0
 
-            # The other four categories: a job with no data for one of these
-            # is excluded from the weighted average below (rather than
-            # counted as a perfect match) - mirrors each scorer's own
-            # "no data" shortcut exactly (see CATEGORY_WEIGHTS) so this check
-            # and the scorer's internal 1.0 fallback can never disagree.
+            # The other categories: a job with no data for one of these is
+            # excluded from the weighted average below (rather than counted
+            # as a perfect match) - mirrors each scorer's own "no data"
+            # shortcut exactly (see CATEGORY_WEIGHTS) so this check and the
+            # scorer's internal 1.0 fallback can never disagree. job_semantic
+            # follows the same principle: excluded whenever there's no
+            # JobEmbedding row for this job (mid-backfill, embedding
+            # failure, or non-Postgres - see _build_query_vector).
             has_data = {
                 'education': bool(job_edu_level) or bool(job_edu_major),
                 # job_min_years == 0 is ambiguous (explicit "0 years
@@ -225,16 +312,18 @@ class JobMatcher:
                 'experience': job_min_years > 0,
                 'language': bool(job_languages),
                 'location': bool(job_location),
+                'job_semantic': job_semantic_score is not None,
             }
             category_scores = {
                 'education': education_score,
                 'experience': experience_score,
                 'language': language_score,
                 'location': location_score,
+                'job_semantic': job_semantic_score or 0.0,
             }
 
-            # Skill's weight is always included; the other four are only
-            # included when the job posting actually has data for them.
+            # Skill's weight is always included; the other categories are
+            # only included when the job posting actually has data for them.
             total_weight = CATEGORY_WEIGHTS['skill'] + sum(
                 CATEGORY_WEIGHTS[cat] for cat, present in has_data.items() if present
             )
@@ -272,6 +361,7 @@ class JobMatcher:
                 'job': normalized_job,
                 'match_score': match_score,
                 'skill_score': skill_score,
+                'job_semantic_score': job_semantic_score,
                 'education_score': education_score,
                 'experience_score': experience_score,
                 'language_score': language_score,

@@ -44,6 +44,11 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    # Required for pgvector's HnswIndex (a PostgresIndex subclass) to pass
+    # Django's system checks. Harmless on SQLite local dev - this only
+    # registers postgres-specific field/index/lookup machinery, it doesn't
+    # require an actual postgres connection.
+    'django.contrib.postgres',
     'jobs',
 ]
 
