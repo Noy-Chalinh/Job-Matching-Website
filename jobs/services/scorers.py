@@ -2,66 +2,82 @@ import numpy as np
 
 
 class SkillScorer:
-    """Hybrid exact + semantic skill matching"""
+    """Hybrid exact + semantic skill matching.
+
+    Scoring a batch of jobs is split into three steps so the embedding model
+    is invoked once per search instead of once per job:
+      1. prepare() - cheap exact-match pass per job, no embedding calls
+      2. one embed_batch() call, over every job's unmatched skills combined
+      3. finish() - combines exact + semantic score per job, using the now-
+         warm embedding cache (near-instant, no new model inference)
+    score() still exists as a single-job convenience wrapper (e.g. for tests),
+    it just does all three steps itself.
+    """
 
     def __init__(self, embedding_service):
         self.embedding_service = embedding_service
         self.use_semantic = True  # Flag to disable semantic matching if it fails
 
-    def score(self, user_skills, job_skills, user_embeddings=None):
-        """
-        Hybrid scoring: exact match + semantic fallback
-        Returns: Score between 0.0 and 1.0
-
-        user_embeddings: optional precomputed embeddings for the user's skills
-        (caller may compute this once per search instead of once per job)
-        """
+    def prepare(self, user_skills, job_skills):
+        """Exact-match pass only. Returns (exact_score, unmatched_job_skills)
+        where unmatched_job_skills is a non-empty set if semantic scoring is
+        needed, or None if not (good exact match, no requirements, or
+        semantic matching already disabled)."""
         if not job_skills:
-            return 1.0  # No requirements = perfect match
+            return 1.0, None
 
-        # Step 1: Exact matching
         user_set = set(s.lower() for s in user_skills)
         job_set = set(s.lower() for s in job_skills)
 
         exact_matches = user_set & job_set
         exact_score = len(exact_matches) / len(job_set)
 
-        # Step 2: Semantic matching (only if exact match is poor and semantic is enabled)
         if exact_score >= 0.7 or not self.use_semantic:
-            return exact_score
+            return exact_score, None
 
-        # Compute semantic similarity for unmatched skills
         unmatched_job_skills = job_set - exact_matches
+        return exact_score, (unmatched_job_skills or None)
 
-        if not unmatched_job_skills:
+    def finish(self, exact_score, unmatched_job_skills, user_skills, user_embeddings=None):
+        """Combine exact_score with semantic similarity for unmatched skills.
+        Cheap as long as embed_batch's cache was already warmed for
+        unmatched_job_skills (and user_embeddings, if not passed in)."""
+        if not unmatched_job_skills or not self.use_semantic:
             return exact_score
 
         try:
-            # Embed user skills (unless already precomputed by the caller) and unmatched job skills
             if user_embeddings is None:
-                user_embeddings = self.embedding_service.embed_batch(list(user_set))
+                user_embeddings = self.embedding_service.embed_batch(
+                    list(set(s.lower() for s in user_skills))
+                )
             job_embeddings = self.embedding_service.embed_batch(list(unmatched_job_skills))
 
-            # Compute similarity matrix
-            similarities = []
-            for job_emb in job_embeddings:
-                max_sim = max(
-                    self.embedding_service.cosine_similarity(job_emb, user_emb)
-                    for user_emb in user_embeddings
-                )
-                similarities.append(max_sim)
-
-            semantic_score = np.mean(similarities)
+            # Embeddings are L2-normalized, so cosine similarity is just the
+            # dot product: one matrix multiply replaces the per-pair Python loop.
+            sims = np.asarray(job_embeddings) @ np.asarray(user_embeddings).T
+            semantic_score = sims.max(axis=1).mean()
 
             # Combine: 70% exact, 30% semantic
             final_score = (exact_score * 0.7) + (semantic_score * 0.3)
-
-            return min(final_score, 1.0)
+            return min(float(final_score), 1.0)
         except Exception as e:
             # If semantic matching fails (e.g., memory error), disable it and use exact match only
             print(f"Warning: Semantic matching failed ({str(e)}), falling back to exact matching only")
             self.use_semantic = False
             return exact_score
+
+    def score(self, user_skills, job_skills, user_embeddings=None):
+        """
+        Hybrid scoring: exact match + semantic fallback, for a single job.
+        Returns: Score between 0.0 and 1.0
+
+        user_embeddings: optional precomputed embeddings for the user's skills
+        (caller may compute this once per search instead of once per job)
+        """
+        exact_score, unmatched_job_skills = self.prepare(user_skills, job_skills)
+        if unmatched_job_skills is None:
+            return exact_score
+        return self.finish(exact_score, unmatched_job_skills, user_skills, user_embeddings)
 
 
 class EducationScorer:

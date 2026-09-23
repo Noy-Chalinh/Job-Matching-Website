@@ -21,6 +21,9 @@ python manage.py check --database default
 echo "==> Running database migrations..."
 python manage.py migrate --noinput
 
+echo "==> Warming embedding model cache..."
+python manage.py warm_embedding_model
+
 echo "==> Checking if jobs table was created..."
 python manage.py shell -c "from django.db import connection; cursor = connection.cursor(); cursor.execute('SELECT COUNT(*) FROM information_schema.tables WHERE table_name = %s', ['jobs']); print(f'Jobs table exists: {cursor.fetchone()[0] > 0}')"
 
@@ -29,7 +32,10 @@ python manage.py shell -c "from django.db import connection; cursor = connection
 
 echo "==> Build completed successfully!"
 
-# Note: there is no way to preload the ML model here - this script runs in a
-# separate process from the gunicorn worker that actually serves requests,
-# so anything loaded here would not be shared with it. The model loads lazily
-# on the first request that needs it (see jobs/services/embeddings.py).
+# Note: this script runs in a separate process from the gunicorn worker that
+# actually serves requests, so the loaded model object itself can't be shared
+# with it - the model still loads lazily into each worker's own memory on its
+# first request. What warm_embedding_model above avoids is the *download*:
+# it populates the on-disk fastembed cache (jobs/services/embeddings.py's
+# FASTEMBED_CACHE_DIR) so that lazy load reads from local disk instead of
+# fetching from the Hugging Face Hub inside a live request.

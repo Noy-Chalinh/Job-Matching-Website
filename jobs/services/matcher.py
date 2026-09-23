@@ -119,20 +119,43 @@ class JobMatcher:
                 list(set(s.lower() for s in user_skill_names))
             )
 
+        # Pass 1: cheap exact-match pass over every job, no embedding calls yet.
+        # Collects which jobs need semantic scoring and what skills they need it for.
+        prepared = []
+        pending_skills = set()
         for job in jobs:
-            # Database format: flat dictionary
             job_skills = job.get('skills', [])
+            exact_score, unmatched = self.skill_scorer.prepare(user_skill_names, job_skills)
+            prepared.append((job, job_skills, exact_score, unmatched))
+            if unmatched:
+                pending_skills.update(unmatched)
+
+        # Pass 2: ONE embedding call for every unmatched skill across every job
+        # in this batch, instead of up to len(jobs) separate small calls - this
+        # is what keeps a 500-candidate search from doing hundreds of round
+        # trips through the model.
+        if pending_skills:
+            try:
+                self.embedding_service.embed_batch(list(pending_skills))
+            except Exception as e:
+                # Same graceful degradation as before this batching change:
+                # if the model itself is unavailable, fall back to exact-only
+                # scoring for the whole search rather than failing it, and
+                # rather than retrying the same failure once per job below.
+                logger.warning(f"Bulk skill embedding failed, falling back to exact-only matching: {e}")
+                self.skill_scorer.use_semantic = False
+
+        for job, job_skills, exact_score, unmatched in prepared:
             job_edu_level = job.get('education_level', '')
             job_edu_major = job.get('education_major', '')
             job_min_years = job.get('min_years_experience', 0)
             job_languages = job.get('languages', [])
             job_location = job.get('location', '')
 
-            # Compute component scores
-            skill_score = self.skill_scorer.score(
-                user_skills=user_skill_names,
-                job_skills=job_skills,
-                user_embeddings=user_embeddings
+            # Pass 3: combine exact + semantic score. The cache is already
+            # warm from pass 2, so this does no new model inference.
+            skill_score = self.skill_scorer.finish(
+                exact_score, unmatched, user_skill_names, user_embeddings=user_embeddings
             )
 
             education_score = self.education_scorer.score(

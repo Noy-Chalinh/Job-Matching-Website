@@ -67,6 +67,27 @@ class Job(models.Model):
         ordering = ['-pubdate']
 
 
+class SkillEmbedding(models.Model):
+    """Persistent cache of one embedding vector per distinct normalized skill
+    string (see jobs.services.embeddings.normalize_skill). Skill vocabulary is
+    far smaller than job count and shared across all jobs/users, so caching
+    here - rather than per-job - is what lets a search skip model inference
+    for any skill it has already seen, even across worker restarts/deploys.
+    """
+    skill = models.CharField(max_length=255, unique=True)
+    vector = models.JSONField()  # list[float], length == dim, L2-normalized
+    model_name = models.CharField(max_length=100, default='sentence-transformers/all-MiniLM-L6-v2')
+    dim = models.PositiveSmallIntegerField(default=384)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return self.skill
+
+    class Meta:
+        db_table = 'skill_embeddings'
+
+
 # Temporary models for matching (not stored in database)
 class UserProfile:
     """Temporary user profile for matching"""
