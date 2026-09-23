@@ -53,7 +53,12 @@ class EmbeddingService:
           worker restart (gunicorn max_requests recycle) and never shared
           across workers.
       L2: the SkillEmbedding table - persists across restarts/deploys and is
-          shared by every worker/process. Preloaded into L1 once per worker.
+          shared by every worker/process. Queried per request for exactly
+          the keys that missed L1, never bulk-loaded: the vocabulary is now
+          ~10k skills, and pulling all of them (as JSONField float arrays,
+          over the network from Supabase, parsed into numpy) cost seconds
+          and tens of MB on every worker boot to populate entries that a
+          given search mostly never touches.
       L3: the fastembed model itself - only for skills truly never seen
           before. Results are written back to L2 (write-through) so this
           cost is paid at most once per distinct skill, ever.
@@ -62,7 +67,6 @@ class EmbeddingService:
     _instance = None
     _model = None
     _embedding_cache = {}  # normalized skill -> embedding, shared across requests in this worker
-    _l2_warmed = False
 
     MODEL_NAME = 'BAAI/bge-small-en-v1.5'
     DIM = 384
@@ -92,25 +96,6 @@ class EmbeddingService:
                 print(f"Error loading model: {e}. Semantic matching disabled.")
                 EmbeddingService._model = False
                 raise
-
-    def _warm_l2_cache(self):
-        """Preload the whole SkillEmbedding table into L1, once per worker.
-        Cheap: the skill vocabulary is far smaller than the job count (a few
-        thousand rows at most), e.g. 5,000 skills * 384 float32 ~= 7.7MB."""
-        if EmbeddingService._l2_warmed:
-            return
-        try:
-            from jobs.models import SkillEmbedding
-            for skill, vector, dim in SkillEmbedding.objects.filter(
-                model_name=self.MODEL_NAME
-            ).values_list('skill', 'vector', 'dim'):
-                if dim == self.DIM and len(vector) == self.DIM:
-                    EmbeddingService._embedding_cache[skill] = np.asarray(vector, dtype=np.float32)
-        except Exception as e:
-            print(f"Warning: could not warm skill-embedding cache from DB: {e}")
-        finally:
-            # Don't retry every call if the DB is briefly unavailable.
-            EmbeddingService._l2_warmed = True
 
     def _write_through(self, new_rows):
         """Persist newly-computed embeddings so future requests (this worker
@@ -144,10 +129,13 @@ class EmbeddingService:
     def embed_batch(self, texts):
         """Embed multiple texts, reusing cached embeddings for text seen
         before - checking the in-process cache, then the persistent
-        SkillEmbedding table, before falling back to the model itself."""
-        self._load_model()
-        self._warm_l2_cache()
+        SkillEmbedding table, before falling back to the model itself.
 
+        The model is only loaded if something actually misses both caches
+        (see below), so a search whose skills are all backfilled never
+        touches it. Worker boot preloads it anyway (gunicorn.conf.py's
+        post_worker_init) so that load never lands inside a request.
+        """
         texts = list(texts)
         cache = EmbeddingService._embedding_cache
         key_of = {t: normalize_skill(t) for t in texts}
@@ -171,6 +159,7 @@ class EmbeddingService:
         # True misses: never-before-seen skills -> run fastembed, once, batched.
         true_misses = sorted({k for k in key_of.values() if k and k not in cache})
         if true_misses:
+            self._load_model()
             # fastembed.embed() returns a generator of L2-normalized numpy arrays
             new_embeddings = list(EmbeddingService._model.embed(true_misses))
             new_rows = []

@@ -74,7 +74,7 @@ class JobMatcher:
             logger.warning(f"Query embedding for semantic job search failed: {e}")
             return None
 
-    def _prefilter_jobs(self, user_profile, max_candidates=500, query_vector=None):
+    def _prefilter_jobs(self, user_profile, max_candidates=150, query_vector=None):
         """
         Pre-filter jobs from database to reduce matching workload
         Returns: (list of job dicts, {job_id: job_semantic_score} for jobs
@@ -192,9 +192,14 @@ class JobMatcher:
         # Get candidate jobs from database, ranked by pgvector ANN
         # similarity when available (see _build_query_vector/_prefilter_jobs),
         # else by the skill-overlap fallback.
+        #
+        # 150, not 500: ANN hands back the most semantically relevant jobs
+        # first, so the extra 350 were the *least* relevant ones - scoring
+        # them cost a 3x bigger Python loop (and 3x more skill lookups) per
+        # search to influence a top-5 result set they'd never reach.
         query_vector = self._build_query_vector(user_profile)
         jobs, semantic_scores = self._prefilter_jobs(
-            user_profile, max_candidates=500, query_vector=query_vector
+            user_profile, max_candidates=150, query_vector=query_vector
         )
 
         matches = []
