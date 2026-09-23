@@ -6,6 +6,20 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Category weights used to combine per-job-category scores into a single
+# match_score. When a job posting has no data for a category, that category
+# is excluded from the weighted average (see match()) instead of being
+# counted at its scorer's "no data" fallback value of 1.0 - a job that never
+# mentions education, for example, should not be treated as a perfect
+# education match just because it has nothing to disqualify a candidate on.
+CATEGORY_WEIGHTS = {
+    'skill': 0.60,
+    'education': 0.20,
+    'experience': 0.15,
+    'language': 0.03,
+    'location': 0.02,
+}
+
 
 class JobMatcher:
     """Database-only job matching service with exact + semantic matching"""
@@ -181,14 +195,55 @@ class JobMatcher:
                 willing_to_relocate=user_profile.willing_to_relocate
             )
 
-            # Weighted aggregation - Skills prioritized
-            match_score = (
-                skill_score * 0.60 +  # Increased from 40% to 60%
-                education_score * 0.20 +  # Reduced from 25% to 20%
-                experience_score * 0.15 +  # Reduced from 20% to 15%
-                language_score * 0.03 +  # Reduced from 10% to 3%
-                location_score * 0.02  # Reduced from 5% to 2%
+            # Skill is the core signal for this product (60% weight) - unlike
+            # the other categories, a job with no listed skills provides zero
+            # evidence of relevance, and must not be treated as a perfect
+            # match (SkillScorer.prepare's own 1.0 shortcut) nor excluded
+            # from the weighted average. Excluding it would let a job with
+            # zero skill data hit 100% purely off e.g. an exact location
+            # match, out-ranking jobs with genuine (if partial) skill
+            # overlap - observed live: a job with no data at all except a
+            # location matching the user's exactly scored 100%, ahead of
+            # real dev-skill postings at the same location. So: no evidence
+            # of skill relevance is scored as no skill credit, always at
+            # full weight, rather than "unknown, don't count it against you".
+            if not job_skills:
+                skill_score = 0.0
+
+            # The other four categories: a job with no data for one of these
+            # is excluded from the weighted average below (rather than
+            # counted as a perfect match) - mirrors each scorer's own
+            # "no data" shortcut exactly (see CATEGORY_WEIGHTS) so this check
+            # and the scorer's internal 1.0 fallback can never disagree.
+            has_data = {
+                'education': bool(job_edu_level) or bool(job_edu_major),
+                # job_min_years == 0 is ambiguous (explicit "0 years
+                # required" vs. "not extracted" - job_ingest.build_job does
+                # `years = int(years or 0)`), so it's treated as "no data",
+                # consistent with ExperienceScorer's own 1.0 shortcut for
+                # that same value.
+                'experience': job_min_years > 0,
+                'language': bool(job_languages),
+                'location': bool(job_location),
+            }
+            category_scores = {
+                'education': education_score,
+                'experience': experience_score,
+                'language': language_score,
+                'location': location_score,
+            }
+
+            # Skill's weight is always included; the other four are only
+            # included when the job posting actually has data for them.
+            total_weight = CATEGORY_WEIGHTS['skill'] + sum(
+                CATEGORY_WEIGHTS[cat] for cat, present in has_data.items() if present
             )
+            match_score = (
+                skill_score * CATEGORY_WEIGHTS['skill'] + sum(
+                    category_scores[cat] * CATEGORY_WEIGHTS[cat]
+                    for cat, present in has_data.items() if present
+                )
+            ) / total_weight
 
             # Skill gap analysis
             missing_skills = self.skill_gap_analyzer.analyze(
