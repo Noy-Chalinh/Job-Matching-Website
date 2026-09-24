@@ -145,8 +145,13 @@ STATICFILES_DIRS = []
 # setting, so it was being silently ignored here.)
 STORAGES = {
     'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
-    'staticfiles': {'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage'},
+    # Falls back to unhashed paths if collectstatic hasn't run, instead of
+    # 500ing every page - see config/storage.py.
+    'staticfiles': {'BACKEND': 'config.storage.ForgivingManifestStaticFilesStorage'},
 }
+# Serve static files straight from each app's static/ directory too, so the
+# unhashed fallback above still resolves when STATIC_ROOT is empty.
+WHITENOISE_USE_FINDERS = True
 
 # Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
