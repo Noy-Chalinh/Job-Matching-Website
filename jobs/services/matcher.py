@@ -69,7 +69,7 @@ class JobMatcher:
         JobEmbedding (full job_title + raw_text) via pgvector.
 
         There's no free-text resume field today (jobs/forms.py only has
-        current_job_title, comma-separated skills, education_level/major) -
+        job titles, comma-separated skills, education levels/majors) -
         this approximates one from those structured fields. Prefixed with
         BGE_QUERY_PREFIX since this is the asymmetric query side (a short
         query compared against long job passages), unlike the symmetric
@@ -84,12 +84,14 @@ class JobMatcher:
             return None
 
         parts = []
-        if user_profile.current_job_title:
-            parts.append(user_profile.current_job_title)
+        titles = [e['title'] for e in user_profile.experiences if e['title']]
+        if titles:
+            parts.append(', '.join(titles))
         if user_skills:
             parts.append(f"Skills: {', '.join(user_skills)}")
-        if user_profile.education_major:
-            parts.append(user_profile.education_major)
+        majors = [e['major'] for e in user_profile.educations if e['major']]
+        if majors:
+            parts.append(', '.join(majors))
         if not parts:
             return None
 
@@ -183,7 +185,13 @@ class JobMatcher:
         user_skills = self.vocabulary.user_skills(
             [s.skill_name for s in user_profile.skills.all()]
         )
-        user_title = clean_title(user_profile.current_job_title)
+        # Every past role's title; a job is scored against the closest one.
+        user_titles = [
+            t for t in dict.fromkeys(clean_title(e['title']) for e in user_profile.experiences) if t
+        ]
+        # An empty entry stands in for "no education given", so jobs are
+        # still scored the same way as before multiple entries existed.
+        user_educations = user_profile.educations or [{'level': '', 'major': ''}]
 
         # Get candidate jobs from database, ranked by pgvector ANN
         # similarity when available (see _build_query_vector/_prefilter_jobs),
@@ -211,10 +219,9 @@ class JobMatcher:
             job_title = clean_title(job['job_title'])
             prepared.append((job, job_skills, exact, unmatched, job_title))
             pending_texts.update(unmatched)
-            if user_title and job_title:
+            if user_titles and job_title:
                 pending_texts.add(job_title)
-        if user_title:
-            pending_texts.add(user_title)
+        pending_texts.update(user_titles)
 
         # Pass 2: ONE embedding call for every skill and title across every
         # job in this batch, instead of up to len(jobs) separate small calls.
@@ -236,7 +243,7 @@ class JobMatcher:
         if user_skills and embeddings:
             import numpy as np
             user_embeddings = np.array([embeddings[s] for s in user_skills])
-        user_title_embedding = embeddings.get(user_title) if user_title else None
+        user_title_embeddings = [embeddings[t] for t in user_titles if t in embeddings]
 
         matches = []
         for job, job_skills, exact, unmatched, job_title in prepared:
@@ -257,8 +264,11 @@ class JobMatcher:
             )
 
             title_score = None
-            if user_title_embedding is not None and job_title in embeddings:
-                title_score = self.title_scorer.score(user_title_embedding, embeddings[job_title])
+            if user_title_embeddings and job_title in embeddings:
+                title_score = max(
+                    self.title_scorer.score(user_embedding, embeddings[job_title])
+                    for user_embedding in user_title_embeddings
+                )
 
             job_semantic_score = None
             if job['job_id'] in semantic_similarities:
@@ -266,11 +276,17 @@ class JobMatcher:
                     semantic_similarities[job['job_id']], JOB_SEMANTIC_LOW, JOB_SEMANTIC_HIGH
                 )
 
-            education_score = self.education_scorer.score(
-                user_level=user_profile.education_level,
-                user_major=user_profile.education_major,
-                job_level=job_edu_level,
-                job_major=job_edu_major
+            # Best of the user's degrees for this job: e.g. a master's in
+            # marketing and a bachelor's in accounting should fully match an
+            # accounting job via the bachelor's.
+            education_score = max(
+                self.education_scorer.score(
+                    user_level=education['level'],
+                    user_major=education['major'],
+                    job_level=job_edu_level,
+                    job_major=job_edu_major
+                )
+                for education in user_educations
             )
 
             experience_score = self.experience_scorer.score(

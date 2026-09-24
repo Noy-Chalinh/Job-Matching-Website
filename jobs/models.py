@@ -120,14 +120,42 @@ class JobEmbedding(models.Model):
 
 # Temporary models for matching (not stored in database)
 class UserProfile:
-    """Temporary user profile for matching"""
+    """Temporary user profile for matching.
+
+    Holds every experience ({'title', 'years'}) and education ({'level',
+    'major'}) entry from the search form. Either pass those lists, or the
+    single-value arguments (a one-entry profile). The single-value
+    attributes are always set as summaries: total years across all roles,
+    the first job title, and the highest education level with its major.
+    """
+
+    # Ordered lowest to highest, matching jobs.forms EDUCATION_LEVEL_CHOICES.
+    EDUCATION_RANK = {'high school': 1, 'associate': 2, "bachelor's degree": 3, "master's degree": 4, 'phd': 5}
+
     def __init__(self, years_of_experience=0, current_job_title='',
                  education_level='', education_major='',
-                 preferred_location='', willing_to_relocate=False):
-        self.years_of_experience = years_of_experience
-        self.current_job_title = current_job_title
-        self.education_level = education_level
-        self.education_major = education_major
+                 preferred_location='', willing_to_relocate=False,
+                 experiences=None, educations=None):
+        if experiences is None:
+            experiences = (
+                [{'title': current_job_title, 'years': years_of_experience}]
+                if current_job_title or years_of_experience else []
+            )
+        if educations is None:
+            educations = (
+                [{'level': education_level, 'major': education_major}]
+                if education_level or education_major else []
+            )
+        self.experiences = experiences
+        self.educations = educations
+
+        self.years_of_experience = sum(e['years'] for e in experiences)
+        self.current_job_title = next((e['title'] for e in experiences if e['title']), '')
+        highest = max(
+            educations, key=lambda e: self.EDUCATION_RANK.get(e['level'], 0), default=None
+        )
+        self.education_level = highest['level'] if highest else ''
+        self.education_major = highest['major'] if highest else ''
         self.preferred_location = preferred_location
         self.willing_to_relocate = willing_to_relocate
 

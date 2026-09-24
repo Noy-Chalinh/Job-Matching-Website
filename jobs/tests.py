@@ -174,3 +174,81 @@ class SkillScorerTests(TestCase):
         unrelated = self.scorer.score(['bookkeeping'], ['autocad'])
         self.assertGreater(related, unrelated)
         self.assertLess(related, 1.0)
+
+
+class RepeatableSectionFormTests(TestCase):
+    """Experience, education and languages are repeatable rows added and
+    removed in the browser, so their numbering can have gaps."""
+
+    def _form(self, **data):
+        from jobs.forms import JobSearchForm
+        form = JobSearchForm(data)
+        self.assertTrue(form.is_valid(), form.errors)
+        return form.cleaned_data
+
+    def test_rows_after_a_removed_row_are_kept(self):
+        data = self._form(
+            experience_title_1='Accountant', experience_years_1='2',
+            experience_title_3='Auditor', experience_years_3='1.5',
+            language_1='English', proficiency_1='fluent',
+            language_3='Khmer', proficiency_3='native',
+        )
+        self.assertEqual(data['experiences'], [
+            {'title': 'Accountant', 'years': 2.0}, {'title': 'Auditor', 'years': 1.5},
+        ])
+        self.assertEqual([l['name'] for l in data['languages']], ['english', 'khmer'])
+
+    def test_empty_rows_are_ignored(self):
+        data = self._form(
+            experience_title_1='', experience_years_1='',
+            education_level_1='', education_major_1='',
+            education_level_2="master's degree", education_major_2='Finance',
+        )
+        self.assertEqual(data['experiences'], [])
+        self.assertEqual(data['educations'], [{'level': "master's degree", 'major': 'Finance'}])
+
+    def test_invalid_years_are_rejected(self):
+        from jobs.forms import JobSearchForm
+        self.assertFalse(JobSearchForm({'experience_title_1': 'Dev', 'experience_years_1': '-3'}).is_valid())
+        self.assertFalse(JobSearchForm({'experience_title_1': 'Dev', 'experience_years_1': 'abc'}).is_valid())
+
+    def test_unknown_education_level_is_rejected(self):
+        from jobs.forms import JobSearchForm
+        self.assertFalse(JobSearchForm({'education_level_1': 'wizard'}).is_valid())
+
+
+class MultipleEntryMatchingTests(TestCase):
+    def setUp(self):
+        self.matcher = JobMatcher()
+        Job.objects.create(
+            job_id='acct-1', job_title='Accountant', location='phnom penh',
+            min_years_experience=3, education_level="bachelor's degree",
+            education_major='accounting', skills=['accounting'], languages=[],
+        )
+
+    def test_years_are_summed_across_roles(self):
+        profile = _make_profile(experiences=[
+            {'title': 'Junior Accountant', 'years': 1.5}, {'title': 'Bookkeeper', 'years': 2},
+        ])
+        self.assertEqual(profile.years_of_experience, 3.5)
+        [match] = self.matcher.match(profile, top_n=1)
+        self.assertEqual(match['experience_score'], 1.0)
+
+    def test_best_degree_is_used(self):
+        profile = _make_profile(educations=[
+            {'level': "master's degree", 'major': 'marketing'},
+            {'level': "bachelor's degree", 'major': 'accounting'},
+        ])
+        self.assertEqual(profile.education_level, "master's degree")
+        [match] = self.matcher.match(profile, top_n=1)
+        self.assertEqual(match['education_score'], 1.0)
+
+    def test_closest_past_title_is_used(self):
+        one_title = _make_profile(experiences=[{'title': 'Graphic Designer', 'years': 2}])
+        two_titles = _make_profile(experiences=[
+            {'title': 'Graphic Designer', 'years': 2}, {'title': 'Accountant', 'years': 1},
+        ])
+        [only_designer] = self.matcher.match(one_title, top_n=1)
+        [with_accountant] = self.matcher.match(two_titles, top_n=1)
+        self.assertGreater(with_accountant['title_score'], only_designer['title_score'])
+        self.assertAlmostEqual(with_accountant['title_score'], 1.0)

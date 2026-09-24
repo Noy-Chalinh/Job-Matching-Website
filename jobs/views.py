@@ -69,15 +69,14 @@ def search_results(request):
             # Log form data for debugging
             logger.info(f"Skills from form: {form.cleaned_data.get('skills', [])}")
             logger.info(f"Languages from form: {form.cleaned_data.get('languages', [])}")
-            logger.info(f"Experience: {form.cleaned_data.get('years_of_experience', 0)} years")
+            logger.info(f"Experience from form: {form.cleaned_data.get('experiences', [])}")
+            logger.info(f"Education from form: {form.cleaned_data.get('educations', [])}")
             logger.info(f"Location: {form.cleaned_data.get('preferred_location', '')}, willing to relocate: {form.cleaned_data.get('willing_to_relocate', False)}")
-            
+
             # Create temporary user profile (not saved to database)
             temp_profile = UserProfile(
-                years_of_experience=form.cleaned_data.get('years_of_experience', 0),
-                current_job_title=form.cleaned_data.get('current_job_title', ''),
-                education_level=form.cleaned_data.get('education_level', ''),
-                education_major=form.cleaned_data.get('education_major', ''),
+                experiences=form.cleaned_data.get('experiences', []),
+                educations=form.cleaned_data.get('educations', []),
                 preferred_location=form.cleaned_data.get('preferred_location', ''),
                 willing_to_relocate=form.cleaned_data.get('willing_to_relocate', False)
             )

@@ -1,9 +1,29 @@
+import re
+
 from django import forms
-from .models import UserProfile, UserSkill, UserLanguage
+
+
+def _repeatable_rows(data, *fields):
+    """Rows of a repeatable form section whose inputs are named
+    '<field>_<N>' (added/removed in the browser by search.html's JS), in N
+    order. N can have gaps - removing an entry leaves a hole in the
+    numbering - so every index present is collected rather than counting up
+    from 1 and stopping at the first missing one.
+    """
+    pattern = re.compile(r'^(?:%s)_(\d+)$' % '|'.join(map(re.escape, fields)))
+    indices = sorted({int(m.group(1)) for key in data for m in [pattern.match(key)] if m})
+    return [{f: (data.get(f'{f}_{i}') or '').strip() for f in fields} for i in indices]
 
 
 class JobSearchForm(forms.Form):
-    """Form for user to input their profile and find matching jobs"""
+    """Form for user to input their profile and find matching jobs.
+
+    Experience, education and languages are repeatable sections rendered and
+    managed by search.html (inputs named e.g. experience_title_1,
+    experience_years_1, experience_title_3, ...), so they aren't declared as
+    fields here - clean() parses them into cleaned_data['experiences'],
+    ['educations'] and ['languages'].
+    """
 
     # Skills (comma-separated)
     skills = forms.CharField(
@@ -16,22 +36,6 @@ class JobSearchForm(forms.Form):
         required=False
     )
 
-    # Experience
-    years_of_experience = forms.IntegerField(
-        label='Years of Experience',
-        min_value=0,
-        initial=0,
-        widget=forms.NumberInput(attrs={'placeholder': '0'})
-    )
-
-    current_job_title = forms.CharField(
-        label='Current Job Title',
-        max_length=200,
-        required=False,
-        widget=forms.TextInput(attrs={'placeholder': 'e.g., Software Developer'})
-    )
-
-    # Education
     EDUCATION_LEVEL_CHOICES = [
         ('', 'Select education level'),
         ('high school', 'High School'),
@@ -41,21 +45,15 @@ class JobSearchForm(forms.Form):
         ('phd', 'PhD'),
     ]
 
-    education_level = forms.ChoiceField(
-        label='Education Level',
-        choices=EDUCATION_LEVEL_CHOICES,
-        required=False
-    )
+    PROFICIENCY_CHOICES = [
+        ('', 'Select level'),
+        ('basic', 'Basic'),
+        ('good', 'Good'),
+        ('fluent', 'Fluent'),
+        ('native', 'Native'),
+    ]
 
-    education_major = forms.CharField(
-        label='Major / Field of Study',
-        max_length=100,
-        required=False,
-        widget=forms.TextInput(attrs={'placeholder': 'e.g., Computer Science, Engineering'})
-    )
-
-    # Languages - will be handled by JavaScript in template
-    # We'll process this in the view from POST data
+    MAX_YEARS_PER_ROLE = 60
 
     # Location
     preferred_location = forms.CharField(
@@ -76,35 +74,67 @@ class JobSearchForm(forms.Form):
         skills_text = self.cleaned_data.get('skills', '')
         if not skills_text:
             return []
-        
+
         # Split by comma and clean up
         skills = [s.strip() for s in skills_text.split(',') if s.strip()]
         return skills
 
     def clean(self):
         cleaned_data = super().clean()
-        # Languages come from dynamic language_N/proficiency_N inputs, not a
-        # declared field, so Django never calls clean_languages() on its own -
-        # without this, every search matched as if the user spoke nothing.
-        cleaned_data['languages'] = self.clean_languages()
+        # These come from dynamic inputs, not declared fields, so Django
+        # never calls their clean_*() methods on its own.
+        for name, parse in (
+            ('experiences', self.clean_experiences),
+            ('educations', self.clean_educations),
+            ('languages', self.clean_languages),
+        ):
+            try:
+                cleaned_data[name] = parse()
+            except forms.ValidationError as e:
+                self.add_error(None, e)
         return cleaned_data
 
+    def clean_experiences(self):
+        """[{'title': str, 'years': float}], one per filled-in experience row."""
+        experiences = []
+        for row in _repeatable_rows(self.data, 'experience_title', 'experience_years'):
+            title, years_text = row['experience_title'][:200], row['experience_years']
+            if not title and not years_text:
+                continue
+            try:
+                years = float(years_text) if years_text else 0.0
+            except ValueError:
+                raise forms.ValidationError(f'"{years_text}" is not a valid number of years.')
+            if not 0 <= years <= self.MAX_YEARS_PER_ROLE:
+                raise forms.ValidationError(
+                    f'Years of experience must be between 0 and {self.MAX_YEARS_PER_ROLE}.'
+                )
+            experiences.append({'title': title, 'years': years})
+        return experiences
+
+    def clean_educations(self):
+        """[{'level': str, 'major': str}], one per filled-in education row."""
+        valid_levels = {value for value, _ in self.EDUCATION_LEVEL_CHOICES}
+        educations = []
+        for row in _repeatable_rows(self.data, 'education_level', 'education_major'):
+            level, major = row['education_level'].lower(), row['education_major'][:100]
+            if not level and not major:
+                continue
+            if level not in valid_levels:
+                raise forms.ValidationError('Please choose an education level from the list.')
+            educations.append({'level': level, 'major': major})
+        return educations
+
     def clean_languages(self):
-        """Parse language input from multiple fields"""
+        """[{'name': str, 'level': str}], one per row with a language name."""
+        valid_levels = {value for value, _ in self.PROFICIENCY_CHOICES if value}
         languages = []
-        
-        # Get all language and proficiency fields from POST data
-        data = self.data
-        i = 1
-        while f'language_{i}' in data and data.get(f'language_{i}', '').strip():
-            language = data.get(f'language_{i}', '').strip()
-            proficiency = data.get(f'proficiency_{i}', '').strip()
-            
-            if language:
-                languages.append({
-                    'name': language.lower(),
-                    'level': proficiency.lower() if proficiency else 'good'
-                })
-            i += 1
-        
+        for row in _repeatable_rows(self.data, 'language', 'proficiency'):
+            if not row['language']:
+                continue
+            level = row['proficiency'].lower()
+            languages.append({
+                'name': row['language'].lower(),
+                'level': level if level in valid_levels else 'good'
+            })
         return languages
