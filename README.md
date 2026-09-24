@@ -37,3 +37,12 @@ Both commands are safe to re-run: `scrape_camhr` upserts by `(source, job_id)`, 
 
 `manage.py load_jobs` still exists for importing an old normalized JSON file (e.g. a backup) directly into the `jobs` table, but it is no longer part of the regular pipeline.
 
+
+## 🎨 Rebuilding the CSS
+
+Styles are prebuilt with Tailwind v3 into `jobs/static/jobs/app.css` (the site no longer compiles Tailwind in the browser). After changing classes in any template, rebuild it:
+
+```bash
+pip install pytailwindcss        # dev only, not in requirements.txt
+TAILWINDCSS_VERSION=v3.4.17 tailwindcss -c tailwind.config.js -i tailwind.input.css -o jobs/static/jobs/app.css --minify
+```

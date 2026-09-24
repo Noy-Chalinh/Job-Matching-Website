@@ -81,6 +81,14 @@ class JobSearchForm(forms.Form):
         skills = [s.strip() for s in skills_text.split(',') if s.strip()]
         return skills
 
+    def clean(self):
+        cleaned_data = super().clean()
+        # Languages come from dynamic language_N/proficiency_N inputs, not a
+        # declared field, so Django never calls clean_languages() on its own -
+        # without this, every search matched as if the user spoke nothing.
+        cleaned_data['languages'] = self.clean_languages()
+        return cleaned_data
+
     def clean_languages(self):
         """Parse language input from multiple fields"""
         languages = []

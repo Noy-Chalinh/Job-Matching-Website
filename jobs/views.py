@@ -1,3 +1,4 @@
+from django.core.cache import cache
 from django.shortcuts import render
 from django.http import HttpResponse
 from .forms import JobSearchForm
@@ -9,11 +10,29 @@ import traceback
 logger = logging.getLogger(__name__)
 
 
+def healthz(request):
+    """Liveness check for Render's health checks and uptime pingers.
+    Deliberately touches neither the database nor the embedding model, so
+    pinging it every few minutes (to stop the free instance from spinning
+    down) costs next to nothing."""
+    return HttpResponse("ok", content_type="text/plain")
+
+
+def get_job_count():
+    """Job count for the search page, cached so each page view isn't a
+    COUNT(*) round trip to the database. Jobs only change when a scrape is
+    loaded, so a few minutes of staleness is harmless."""
+    job_count = cache.get('job_count')
+    if job_count is None:
+        job_count = Job.objects.count()
+        cache.set('job_count', job_count, 600)
+    return job_count
+
+
 def search(request):
     """Display job search form"""
     try:
-        job_count = Job.objects.count()
-        logger.info(f"Number of jobs in database: {job_count}")
+        job_count = get_job_count()
 
         form = JobSearchForm()
         return render(request, 'search.html', {
@@ -35,10 +54,7 @@ def search_results(request):
             return render(request, 'search.html', {'form': form})
 
         # Check if there are any jobs in database
-        job_count = Job.objects.count()
-        logger.info(f"Total jobs in database: {job_count}")
-
-        if job_count == 0:
+        if get_job_count() == 0:
             return render(request, 'results.html', {
                 'results': [],
                 'total_matches': 0,
@@ -120,6 +136,7 @@ def search_results(request):
                     'location': job.get('location', 'N/A'),
                     'match_score': round(match['match_score'] * 100, 1),  # Convert to percentage
                     'skill_score': round(match['skill_score'] * 100, 1),
+                    'title_score': None if match['title_score'] is None else round(match['title_score'] * 100, 1),
                     'education_score': round(match['education_score'] * 100, 1),
                     'experience_score': round(match['experience_score'] * 100, 1),
                     'language_score': round(match['language_score'] * 100, 1),

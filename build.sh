@@ -21,7 +21,7 @@ python manage.py check --database default
 echo "==> Running database migrations..."
 python manage.py migrate --noinput
 
-echo "==> Warming embedding model cache..."
+echo "==> Warming embedding model cache and precomputing skill/title embeddings..."
 python manage.py warm_embedding_model
 
 echo "==> Checking if jobs table was created..."

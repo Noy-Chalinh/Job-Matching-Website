@@ -37,7 +37,7 @@
     "scipy", "matplotlib", "seaborn", "jupyter", "apache spark", "hadoop", "hive",
     "tableau", "power bi", "powerbi", "qlik", "looker", "databricks", "airflow",
     "kafka", "apache kafka", "etl", "data pipeline", "machine learning", "ml",
-    "deep learning", "nlp", "natural language processing", "computer vision", "cv"
+    "deep learning", "nlp", "natural language processing", "computer vision"
   ],
   "office_productivity": [
     "ms office", "microsoft office", "ms word", "word", "ms excel", "excel",

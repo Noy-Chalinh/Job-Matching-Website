@@ -52,8 +52,11 @@ class MatchScoreWeightingTests(TestCase):
         # No JobEmbedding row exists for this job in these tests, so
         # job_semantic has no data and is excluded from the weighted
         # average regardless of backend - same renormalization rule as
-        # every other category here.
-        total_weight = sum(CATEGORY_WEIGHTS.values()) - CATEGORY_WEIGHTS['job_semantic']
+        # every other category here. Likewise title: this profile has no
+        # current_job_title to compare.
+        total_weight = (
+            sum(CATEGORY_WEIGHTS.values()) - CATEGORY_WEIGHTS['job_semantic'] - CATEGORY_WEIGHTS['title']
+        )
         expected = (
             match['skill_score'] * CATEGORY_WEIGHTS['skill'] +
             match['education_score'] * CATEGORY_WEIGHTS['education'] +
@@ -113,3 +116,61 @@ class MatchScoreWeightingTests(TestCase):
         )
         matches = {m['job']['job_id']: m for m in self.matcher.match(self.profile, top_n=2)}
         self.assertGreater(matches['dev-1']['match_score'], matches['driver-1']['match_score'])
+
+
+class SkillVocabularyTests(TestCase):
+    """Job.skills from the extraction pipeline is mostly noise; the
+    vocabulary must keep real skills, drop the rest, and canonicalize
+    spelling variants on both sides."""
+
+    def setUp(self):
+        from jobs.services.skill_vocab import get_vocabulary
+        self.vocab = get_vocabulary()
+
+    def test_noise_is_dropped_and_variants_canonicalized(self):
+        skills = self.vocab.job_skills(
+            ['public holidays', 'st. 271', 'how to apply', 'excel & power point',
+             'proficiency with micrsoft word', 'annual leave 18 days', 'negotiable'],
+            'Admin Assistant',
+        )
+        self.assertEqual(skills, ['administration', 'ms excel', 'ms powerpoint', 'ms word'])
+
+    def test_cv_false_positive_needs_title_evidence(self):
+        self.assertNotIn('computer vision', self.vocab.job_skills(['computer vision'], 'Receptionist'))
+        self.assertIn('computer vision', self.vocab.job_skills(['computer vision'], 'AI Engineer'))
+
+    def test_degree_is_not_a_skill(self):
+        self.assertEqual(self.vocab.job_skills(['business administration', 'bachelor'], ''), [])
+
+    def test_khmer_fragments_are_stripped(self):
+        self.assertEqual(self.vocab.job_skills(['microsoft office នទ', 'កកន ឬខ បញ'], ''), ['ms office'])
+
+    def test_title_supplies_generic_skills(self):
+        self.assertIn('sales', self.vocab.job_skills([], 'Sales Executive'))
+        self.assertIn('accounting', self.vocab.job_skills([], 'Senior Accountant'))
+
+    def test_user_skills_keep_unknown_terms(self):
+        self.assertEqual(
+            self.vocab.user_skills(['Excel', 'JS', 'Microsoft Word', 'underwater welding']),
+            ['ms excel', 'javascript', 'ms word', 'underwater welding'],
+        )
+
+
+class SkillScorerTests(TestCase):
+    def setUp(self):
+        from jobs.services.embeddings import EmbeddingService
+        from jobs.services.scorers import SkillScorer
+        self.scorer = SkillScorer(EmbeddingService())
+
+    def test_exact_full_match_is_perfect(self):
+        self.assertAlmostEqual(self.scorer.score(['python', 'django'], ['python', 'django']), 1.0)
+
+    def test_unrelated_skills_get_no_semantic_credit(self):
+        """The old scorer gave ~0.17 to any job via raw similarity averaging."""
+        self.assertLess(self.scorer.score(['python', 'django'], ['accounting', 'taxation']), 0.05)
+
+    def test_related_skills_beat_unrelated(self):
+        related = self.scorer.score(['bookkeeping'], ['accounting'])
+        unrelated = self.scorer.score(['bookkeeping'], ['autocad'])
+        self.assertGreater(related, unrelated)
+        self.assertLess(related, 1.0)
