@@ -2,6 +2,15 @@ services:
   - type: web
     name: job-matching-website
     env: python
+    # Closest Render region to both the Supabase database (ap-northeast-2,
+    # Seoul) and this site's users in Cambodia. Without this Render defaults
+    # to Oregon, which puts a trans-Pacific round trip on every DB query.
+    # Note: Render can't move an existing service between regions - a new
+    # service has to be created for this to take effect.
+    region: singapore
+    # Cheap endpoint that touches neither the DB nor the ML model (see
+    # jobs.views.healthz); also the URL to point an uptime pinger at.
+    healthCheckPath: /healthz
     buildCommand: "./build.sh"
     startCommand: "gunicorn config.wsgi:application --config gunicorn.conf.py"
     envVars:

@@ -1,3 +1,4 @@
+from django.core.cache import cache
 from django.shortcuts import render
 from django.http import HttpResponse
 from .forms import JobSearchForm
@@ -9,11 +10,29 @@ import traceback
 logger = logging.getLogger(__name__)
 
 
+def healthz(request):
+    """Liveness check for Render's health checks and uptime pingers.
+    Deliberately touches neither the database nor the embedding model, so
+    pinging it every few minutes (to stop the free instance from spinning
+    down) costs next to nothing."""
+    return HttpResponse("ok", content_type="text/plain")
+
+
+def get_job_count():
+    """Job count for the search page, cached so each page view isn't a
+    COUNT(*) round trip to the database. Jobs only change when a scrape is
+    loaded, so a few minutes of staleness is harmless."""
+    job_count = cache.get('job_count')
+    if job_count is None:
+        job_count = Job.objects.count()
+        cache.set('job_count', job_count, 600)
+    return job_count
+
+
 def search(request):
     """Display job search form"""
     try:
-        job_count = Job.objects.count()
-        logger.info(f"Number of jobs in database: {job_count}")
+        job_count = get_job_count()
 
         form = JobSearchForm()
         return render(request, 'search.html', {
@@ -35,10 +54,7 @@ def search_results(request):
             return render(request, 'search.html', {'form': form})
 
         # Check if there are any jobs in database
-        job_count = Job.objects.count()
-        logger.info(f"Total jobs in database: {job_count}")
-
-        if job_count == 0:
+        if get_job_count() == 0:
             return render(request, 'results.html', {
                 'results': [],
                 'total_matches': 0,
@@ -53,15 +69,14 @@ def search_results(request):
             # Log form data for debugging
             logger.info(f"Skills from form: {form.cleaned_data.get('skills', [])}")
             logger.info(f"Languages from form: {form.cleaned_data.get('languages', [])}")
-            logger.info(f"Experience: {form.cleaned_data.get('years_of_experience', 0)} years")
+            logger.info(f"Experience from form: {form.cleaned_data.get('experiences', [])}")
+            logger.info(f"Education from form: {form.cleaned_data.get('educations', [])}")
             logger.info(f"Location: {form.cleaned_data.get('preferred_location', '')}, willing to relocate: {form.cleaned_data.get('willing_to_relocate', False)}")
-            
+
             # Create temporary user profile (not saved to database)
             temp_profile = UserProfile(
-                years_of_experience=form.cleaned_data.get('years_of_experience', 0),
-                current_job_title=form.cleaned_data.get('current_job_title', ''),
-                education_level=form.cleaned_data.get('education_level', ''),
-                education_major=form.cleaned_data.get('education_major', ''),
+                experiences=form.cleaned_data.get('experiences', []),
+                educations=form.cleaned_data.get('educations', []),
                 preferred_location=form.cleaned_data.get('preferred_location', ''),
                 willing_to_relocate=form.cleaned_data.get('willing_to_relocate', False)
             )
@@ -120,6 +135,7 @@ def search_results(request):
                     'location': job.get('location', 'N/A'),
                     'match_score': round(match['match_score'] * 100, 1),  # Convert to percentage
                     'skill_score': round(match['skill_score'] * 100, 1),
+                    'title_score': None if match['title_score'] is None else round(match['title_score'] * 100, 1),
                     'education_score': round(match['education_score'] * 100, 1),
                     'experience_score': round(match['experience_score'] * 100, 1),
                     'language_score': round(match['language_score'] * 100, 1),

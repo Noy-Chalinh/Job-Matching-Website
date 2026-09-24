@@ -1,67 +1,130 @@
 import numpy as np
 
 
+def soft_threshold(similarity, low, high):
+    """Map a cosine similarity onto 0..1 credit: nothing at or below `low`,
+    full credit at or above `high`, linear in between.
+
+    Raw BGE similarities can't be used as scores directly: measured with
+    bge-small-en-v1.5 on this app's own vocabulary, clearly *unrelated*
+    short phrases ("python" vs "accounting", "photoshop" vs "taxation")
+    still score ~0.50-0.63, while related ones ("bookkeeping" vs
+    "accounting", "django" vs "python") score ~0.60-0.84. Averaging raw
+    similarities gave every job the same ~0.55 floor, drowning out the
+    signal; thresholding keeps only the part of the range that means
+    something.
+    """
+    return float(np.clip((np.asarray(similarity) - low) / (high - low), 0.0, 1.0))
+
+
 class SkillScorer:
-    """Hybrid exact + semantic skill matching"""
+    """Exact + semantic skill matching over canonical skills
+    (see jobs.services.skill_vocab).
+
+    Every job skill earns credit 1.0 if the user has it exactly, otherwise
+    partial credit from its closest user skill via soft_threshold (capped at
+    RELATED_CREDIT, so having a related skill never counts as much as having
+    the skill itself). The score blends:
+      - coverage: how much of what the job asks for the user covers, and
+      - relevance: how much of what the user offers this job actually uses,
+    so a job that happens to list one of a user's ten skills doesn't rank
+    alongside a job that needs most of them.
+
+    Scoring a batch of jobs is split so the embedding model is invoked once
+    per search instead of once per job:
+      1. prepare() - cheap exact-match pass per job, no embedding calls
+      2. one embed_batch() call, over every job's unmatched skills combined
+      3. finish() - the per-job score, using the now-warm embedding cache
+    score() still exists as a single-job convenience wrapper (e.g. for tests).
+    """
+
+    SIM_LOW = 0.62
+    SIM_HIGH = 0.82
+    RELATED_CREDIT = 0.8
+    COVERAGE_WEIGHT = 0.7
+    RELEVANCE_WEIGHT = 0.3
+    # A job skill counts as "missing" for the skill-gap list below this credit.
+    MISSING_BELOW = 0.5
 
     def __init__(self, embedding_service):
         self.embedding_service = embedding_service
         self.use_semantic = True  # Flag to disable semantic matching if it fails
 
+    def prepare(self, user_skills, job_skills):
+        """Exact-match pass only. Returns (exact_matches, unmatched_job_skills)
+        where unmatched_job_skills is the set that still needs semantic
+        scoring (empty if none, or if semantic matching is disabled)."""
+        user_set = set(user_skills)
+        job_set = set(job_skills)
+        exact = user_set & job_set
+        unmatched = (job_set - exact) if self.use_semantic and user_set else set()
+        return exact, unmatched
+
+    def finish(self, exact, unmatched_job_skills, user_skills, job_skills, user_embeddings=None):
+        """Returns (score, missing_skills). Cheap as long as embed_batch's
+        cache was already warmed for unmatched_job_skills."""
+        job_skills = sorted(set(job_skills))
+        user_skills = list(dict.fromkeys(user_skills))
+        if not job_skills or not user_skills:
+            return 0.0, job_skills
+
+        job_credit = {s: (1.0 if s in exact else 0.0) for s in job_skills}
+        user_credit = {s: (1.0 if s in exact else 0.0) for s in user_skills}
+
+        if unmatched_job_skills and self.use_semantic:
+            try:
+                if user_embeddings is None:
+                    user_embeddings = self.embedding_service.embed_batch(user_skills)
+                unmatched = sorted(unmatched_job_skills)
+                job_embeddings = self.embedding_service.embed_batch(unmatched)
+                # Embeddings are L2-normalized, so cosine similarity is just
+                # the dot product: one matrix multiply for every pair.
+                sims = np.asarray(job_embeddings) @ np.asarray(user_embeddings).T
+                for i, skill in enumerate(unmatched):
+                    job_credit[skill] = self.RELATED_CREDIT * soft_threshold(
+                        sims[i].max(), self.SIM_LOW, self.SIM_HIGH
+                    )
+                for j, skill in enumerate(user_skills):
+                    if user_credit[skill] < 1.0:
+                        user_credit[skill] = self.RELATED_CREDIT * soft_threshold(
+                            sims[:, j].max(), self.SIM_LOW, self.SIM_HIGH
+                        )
+            except Exception as e:
+                # If semantic matching fails (e.g., memory error), disable it and use exact match only
+                print(f"Warning: Semantic matching failed ({str(e)}), falling back to exact matching only")
+                self.use_semantic = False
+
+        coverage = sum(job_credit.values()) / len(job_credit)
+        relevance = sum(user_credit.values()) / len(user_credit)
+        score = self.COVERAGE_WEIGHT * coverage + self.RELEVANCE_WEIGHT * relevance
+        missing = [s for s in job_skills if job_credit[s] < self.MISSING_BELOW]
+        return min(float(score), 1.0), missing
+
     def score(self, user_skills, job_skills, user_embeddings=None):
-        """
-        Hybrid scoring: exact match + semantic fallback
-        Returns: Score between 0.0 and 1.0
+        """Single-job convenience wrapper. Returns a score between 0.0 and 1.0."""
+        exact, unmatched = self.prepare(user_skills, job_skills)
+        score, _ = self.finish(exact, unmatched, user_skills, job_skills, user_embeddings)
+        return score
 
-        user_embeddings: optional precomputed embeddings for the user's skills
-        (caller may compute this once per search instead of once per job)
-        """
-        if not job_skills:
-            return 1.0  # No requirements = perfect match
 
-        # Step 1: Exact matching
-        user_set = set(s.lower() for s in user_skills)
-        job_set = set(s.lower() for s in job_skills)
+class TitleScorer:
+    """Similarity between the user's current job title and a job's title.
 
-        exact_matches = user_set & job_set
-        exact_score = len(exact_matches) / len(job_set)
+    Titles are the most direct relevance signal this job board has ("Senior
+    Accountant" vs "Accountant"), but before this the user's title only
+    reached scoring indirectly, blended into the full-text job_semantic query.
+    Thresholds measured the same way as SkillScorer's: related titles
+    ("accountant"/"chief accountant", "hr officer"/"recruitment officer")
+    score ~0.66-0.84, unrelated ones ("cashier"/"civil engineer") ~0.52-0.60.
+    """
 
-        # Step 2: Semantic matching (only if exact match is poor and semantic is enabled)
-        if exact_score >= 0.7 or not self.use_semantic:
-            return exact_score
+    SIM_LOW = 0.60
+    SIM_HIGH = 0.84
 
-        # Compute semantic similarity for unmatched skills
-        unmatched_job_skills = job_set - exact_matches
-
-        if not unmatched_job_skills:
-            return exact_score
-
-        try:
-            # Embed user skills (unless already precomputed by the caller) and unmatched job skills
-            if user_embeddings is None:
-                user_embeddings = self.embedding_service.embed_batch(list(user_set))
-            job_embeddings = self.embedding_service.embed_batch(list(unmatched_job_skills))
-
-            # Compute similarity matrix
-            similarities = []
-            for job_emb in job_embeddings:
-                max_sim = max(
-                    self.embedding_service.cosine_similarity(job_emb, user_emb)
-                    for user_emb in user_embeddings
-                )
-                similarities.append(max_sim)
-
-            semantic_score = np.mean(similarities)
-
-            # Combine: 70% exact, 30% semantic
-            final_score = (exact_score * 0.7) + (semantic_score * 0.3)
-
-            return min(final_score, 1.0)
-        except Exception as e:
-            # If semantic matching fails (e.g., memory error), disable it and use exact match only
-            print(f"Warning: Semantic matching failed ({str(e)}), falling back to exact matching only")
-            self.use_semantic = False
-            return exact_score
+    def score(self, user_title_embedding, job_title_embedding):
+        return soft_threshold(
+            float(np.dot(user_title_embedding, job_title_embedding)), self.SIM_LOW, self.SIM_HIGH
+        )
 
 
 class EducationScorer:
@@ -134,19 +197,45 @@ class EducationScorer:
         if user_m in job_m or job_m in user_m:
             return 0.8
 
-        # Related fields (heuristic)
-        related_groups = [
-            {'computer science', 'information technology', 'software engineering'},
-            {'engineering', 'mechanical engineering', 'civil engineering'},
-            {'business', 'business administration', 'management'},
-            {'design', 'graphic design', 'interior design', 'architecture'}
-        ]
+        # Related fields: same group in data/resources/major_taxonomy.json
+        # (e.g. "management" and "business administration", the two most
+        # common majors on this job board, used to score 0.0 against each
+        # other).
+        user_groups = _major_groups(user_m)
+        if user_groups and user_groups & _major_groups(job_m):
+            return 0.6
 
-        for group in related_groups:
-            if user_m in group and job_m in group:
-                return 0.6
+        # "any field" / "related field" style requirements.
+        if _major_groups(job_m) & {'other:any'}:
+            return 0.8
 
         return 0.0
+
+
+_MAJOR_GROUPS = None
+_ANY_MAJOR = {'any field', 'related field', 'any discipline', 'related discipline'}
+
+
+def _major_groups(major):
+    """Taxonomy groups a (lowercased) major belongs to, matching either the
+    exact entry or an entry contained in it ("bachelor of accounting" ->
+    business)."""
+    global _MAJOR_GROUPS
+    if _MAJOR_GROUPS is None:
+        import json
+        from django.conf import settings
+        path = settings.BASE_DIR / 'data' / 'resources' / 'major_taxonomy.json'
+        with open(path, encoding='utf-8') as f:
+            _MAJOR_GROUPS = json.load(f)
+    groups = set()
+    for group, majors in _MAJOR_GROUPS.items():
+        for m in majors:
+            if m in _ANY_MAJOR:
+                if m in major:
+                    groups.add('other:any')
+            elif m == major or (len(m) > 3 and m in major):
+                groups.add(group)
+    return groups
 
 
 class ExperienceScorer:

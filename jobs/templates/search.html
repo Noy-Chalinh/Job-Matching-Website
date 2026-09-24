@@ -22,6 +22,13 @@
             </div>
         </div>
 
+        {% if error or form.non_field_errors %}
+        <div class="mb-4 p-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700" role="alert">
+            {% if error %}<p>{{ error }}</p>{% endif %}
+            {% for message in form.non_field_errors %}<p>{{ message }}</p>{% endfor %}
+        </div>
+        {% endif %}
+
         <form method="POST" action="{% url 'jobs:search_results' %}" class="space-y-4">
             {% csrf_token %}
 
@@ -46,16 +53,21 @@
                     <span>Experience</span>
                 </label>
 
-                <div class="bg-gray-50 p-3 rounded-lg border border-gray-200 space-y-2">
-                    <div>
-                        <label class="text-xs text-gray-600">Years of Experience</label>
-                        {{ form.years_of_experience }}
-                    </div>
-                    <div>
-                        <label class="text-xs text-gray-600">Job Title</label>
-                        {{ form.current_job_title }}
-                    </div>
+                <div id="experience-container" class="space-y-2">
+                    {% include "partials/experience_entry.html" with n="1" %}
                 </div>
+                <template id="experience-template">
+                    {% include "partials/experience_entry.html" with n="__N__" %}
+                </template>
+
+                <button type="button" id="add-experience" class="mt-2 text-purple-600 hover:text-purple-800 text-sm font-medium flex items-center space-x-1">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/>
+                    </svg>
+                    <span>Add Another Experience</span>
+                </button>
+
+                <p class="text-[11px] text-gray-500 mt-1 ml-0.5">Add each role separately. Years are added up, and every job title is matched.</p>
             </div>
 
             <!-- Education Section -->
@@ -68,16 +80,21 @@
                     <span>Education</span>
                 </label>
 
-                <div class="bg-gray-50 p-3 rounded-lg border border-gray-200 space-y-2">
-                    <div>
-                        <label class="text-xs text-gray-600">{{ form.education_level.label }}</label>
-                        {{ form.education_level }}
-                    </div>
-                    <div>
-                        <label class="text-xs text-gray-600">{{ form.education_major.label }}</label>
-                        {{ form.education_major }}
-                    </div>
+                <div id="education-container" class="space-y-2">
+                    {% include "partials/education_entry.html" with n="1" %}
                 </div>
+                <template id="education-template">
+                    {% include "partials/education_entry.html" with n="__N__" %}
+                </template>
+
+                <button type="button" id="add-education" class="mt-2 text-purple-600 hover:text-purple-800 text-sm font-medium flex items-center space-x-1">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/>
+                    </svg>
+                    <span>Add Another Education</span>
+                </button>
+
+                <p class="text-[11px] text-gray-500 mt-1 ml-0.5">Add each degree separately. Jobs are matched against your best-fitting one.</p>
             </div>
 
             <!-- Languages -->
@@ -89,33 +106,12 @@
                     <span>Languages</span>
                 </label>
 
-                <div id="languages-container" class="space-y-2">
-                    <!-- Language entry template -->
-                    <div class="language-entry bg-gray-50 p-3 rounded-lg border border-gray-200">
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
-                            <div>
-                                <label class="block text-xs text-gray-600 mb-1">Language</label>
-                                <input type="text" name="language_1" placeholder="e.g., English" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent text-sm">
-                            </div>
-                            <div>
-                                <label class="block text-xs text-gray-600 mb-1">Proficiency</label>
-                                <select name="proficiency_1" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent text-sm">
-                                    <option value="">Select level</option>
-                                    <option value="basic">Basic</option>
-                                    <option value="good">Good</option>
-                                    <option value="fluent">Fluent</option>
-                                    <option value="native">Native</option>
-                                </select>
-                            </div>
-                        </div>
-                        <button type="button" class="remove-language mt-2 text-red-500 hover:text-red-700 text-xs opacity-0 group-hover:opacity-100 transition-opacity" style="display: none;">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-                            </svg>
-                            Remove
-                        </button>
-                    </div>
+                <div id="language-container" class="space-y-2">
+                    {% include "partials/language_entry.html" with n="1" %}
                 </div>
+                <template id="language-template">
+                    {% include "partials/language_entry.html" with n="__N__" %}
+                </template>
 
                 <button type="button" id="add-language" class="mt-2 text-purple-600 hover:text-purple-800 text-sm font-medium flex items-center space-x-1">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -202,67 +198,42 @@
 
 <script>
 document.addEventListener('DOMContentLoaded', function() {
-    let languageCount = 1;
+    // Experience, education and languages are repeatable sections: "Add"
+    // copies the section's <template> (inputs named e.g. experience_title___N__,
+    // renumbered below), and each entry's Remove button is shown only while
+    // there's more than one entry. Numbers are never reused, so removing an
+    // entry leaves a gap; jobs/forms.py handles that.
+    function setupRepeatable(section) {
+        const container = document.getElementById(section + '-container');
+        const template = document.getElementById(section + '-template');
+        let count = container.querySelectorAll('.repeatable-entry').length;
 
-    // Add language button
-    document.getElementById('add-language').addEventListener('click', function() {
-        languageCount++;
-        const container = document.getElementById('languages-container');
-        
-        const languageEntry = document.createElement('div');
-        languageEntry.className = 'language-entry bg-gray-50 p-3 rounded-lg border border-gray-200 group';
-        languageEntry.innerHTML = `
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
-                <div>
-                    <label class="block text-xs text-gray-600 mb-1">Language</label>
-                    <input type="text" name="language_${languageCount}" placeholder="e.g., English" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent text-sm">
-                </div>
-                <div>
-                    <label class="block text-xs text-gray-600 mb-1">Proficiency</label>
-                    <select name="proficiency_${languageCount}" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent text-sm">
-                        <option value="">Select level</option>
-                        <option value="basic">Basic</option>
-                        <option value="good">Good</option>
-                        <option value="fluent">Fluent</option>
-                        <option value="native">Native</option>
-                    </select>
-                </div>
-            </div>
-            <button type="button" class="remove-language mt-2 text-red-500 hover:text-red-700 text-xs flex items-center space-x-1">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-                </svg>
-                <span>Remove</span>
-            </button>
-        `;
-        
-        container.appendChild(languageEntry);
-        updateRemoveButtons();
-    });
+        function updateRemoveButtons() {
+            const entries = container.querySelectorAll('.repeatable-entry');
+            entries.forEach(function(entry) {
+                entry.querySelector('.remove-entry').style.display = entries.length > 1 ? 'flex' : 'none';
+            });
+        }
 
-    // Function to update remove button visibility
-    function updateRemoveButtons() {
-        const entries = document.querySelectorAll('.language-entry');
-        entries.forEach((entry, index) => {
-            const removeBtn = entry.querySelector('.remove-language');
-            if (entries.length > 1) {
-                removeBtn.style.display = 'flex';
-            } else {
-                removeBtn.style.display = 'none';
+        document.getElementById('add-' + section).addEventListener('click', function() {
+            count++;
+            container.insertAdjacentHTML('beforeend', template.innerHTML.replaceAll('__N__', count));
+            updateRemoveButtons();
+            container.lastElementChild.querySelector('input, select').focus();
+        });
+
+        container.addEventListener('click', function(e) {
+            const removeButton = e.target.closest('.remove-entry');
+            if (removeButton) {
+                removeButton.closest('.repeatable-entry').remove();
+                updateRemoveButtons();
             }
         });
+
+        updateRemoveButtons();
     }
 
-    // Event delegation for remove buttons
-    document.getElementById('languages-container').addEventListener('click', function(e) {
-        if (e.target.closest('.remove-language')) {
-            e.target.closest('.language-entry').remove();
-            updateRemoveButtons();
-        }
-    });
-
-    // Initial setup
-    updateRemoveButtons();
+    ['experience', 'education', 'language'].forEach(setupRepeatable);
 });
 </script>
 {% endblock %}

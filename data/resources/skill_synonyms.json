@@ -21,7 +21,7 @@
   "staad pro": ["staadpro"],
   "machine learning": ["ml"],
   "natural language processing": ["nlp"],
-  "computer vision": ["cv"],
+  "computer vision": [],
   "power bi": ["powerbi"],
   "github actions": ["gh actions"],
   "gitlab ci": ["gitlab ci/cd"],

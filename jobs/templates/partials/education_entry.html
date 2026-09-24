@@ -1,0 +1,16 @@
+{# One education row. n is the row number, or "__N__" inside the <template> that search.html's JS copies. #}
+<div class="repeatable-entry bg-gray-50 p-3 rounded-lg border border-gray-200">
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+        <div>
+            <label class="block text-xs text-gray-600 mb-1" for="education_level_{{ n }}">Education Level</label>
+            <select id="education_level_{{ n }}" name="education_level_{{ n }}">
+                {% for value, label in form.EDUCATION_LEVEL_CHOICES %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+            </select>
+        </div>
+        <div>
+            <label class="block text-xs text-gray-600 mb-1" for="education_major_{{ n }}">Major / Field of Study</label>
+            <input type="text" id="education_major_{{ n }}" name="education_major_{{ n }}" maxlength="100" placeholder="e.g., Computer Science, Engineering">
+        </div>
+    </div>
+    {% include "partials/remove_entry_button.html" %}
+</div>

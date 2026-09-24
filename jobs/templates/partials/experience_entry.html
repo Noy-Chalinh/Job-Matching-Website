@@ -1,0 +1,14 @@
+{# One experience row. n is the row number, or "__N__" inside the <template> that search.html's JS copies. #}
+<div class="repeatable-entry bg-gray-50 p-3 rounded-lg border border-gray-200">
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-2">
+        <div class="md:col-span-2">
+            <label class="block text-xs text-gray-600 mb-1" for="experience_title_{{ n }}">Job Title</label>
+            <input type="text" id="experience_title_{{ n }}" name="experience_title_{{ n }}" maxlength="200" placeholder="e.g., Software Developer">
+        </div>
+        <div>
+            <label class="block text-xs text-gray-600 mb-1" for="experience_years_{{ n }}">Years</label>
+            <input type="number" id="experience_years_{{ n }}" name="experience_years_{{ n }}" min="0" max="60" step="0.5" placeholder="0">
+        </div>
+    </div>
+    {% include "partials/remove_entry_button.html" %}
+</div>

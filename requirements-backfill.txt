@@ -1,0 +1,13 @@
+# Offline-only dependencies for jobs/management/commands/backfill_skill_embeddings.py.
+#
+# Do NOT add these to requirements.txt / build.sh: torch's default PyPI build
+# bundles CUDA runtime libraries whose memory footprint previously caused this
+# app's production worker to be OOM-killed on Render's 512MB instance (see
+# jobs/services/embeddings.py's docstring for the fastembed migration that
+# fixed it). Install this only when running the backfill manually or in CI,
+# never on the deployed web service:
+#
+#   pip install -r requirements-backfill.txt
+#   python manage.py backfill_skill_embeddings
+-r requirements.txt
+sentence-transformers>=2.2.0

@@ -61,15 +61,21 @@
                     <p class="text-xs font-semibold text-gray-600 mb-2">Match Breakdown (Skills Prioritized):</p>
                     <div class="grid grid-cols-2 gap-2 text-xs">
                         <div class="flex justify-between">
-                            <span class="text-gray-600">Skills (60%):</span>
+                            <span class="text-gray-600">Skills (40%):</span>
                             <span class="font-semibold text-purple-600">{{ job.skill_score }}%</span>
                         </div>
+                        {% if job.title_score is not None %}
                         <div class="flex justify-between">
-                            <span class="text-gray-600">Education (20%):</span>
+                            <span class="text-gray-600">Job Title (15%):</span>
+                            <span class="font-semibold text-purple-600">{{ job.title_score }}%</span>
+                        </div>
+                        {% endif %}
+                        <div class="flex justify-between">
+                            <span class="text-gray-600">Education (13%):</span>
                             <span class="font-semibold text-purple-600">{{ job.education_score }}%</span>
                         </div>
                         <div class="flex justify-between">
-                            <span class="text-gray-600">Experience (15%):</span>
+                            <span class="text-gray-600">Experience (12%):</span>
                             <span class="font-semibold text-purple-600">{{ job.experience_score }}%</span>
                         </div>
                         <div class="flex justify-between">

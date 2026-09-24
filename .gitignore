@@ -145,6 +145,8 @@ logs/
 # Static files (generated)
 staticfiles/
 static/
+# ...except app static sources (the prebuilt Tailwind CSS lives here)
+!jobs/static/
 
 # Media files (uploaded)
 # Environment variables

@@ -44,6 +44,11 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    # Required for pgvector's HnswIndex (a PostgresIndex subclass) to pass
+    # Django's system checks. Harmless on SQLite local dev - this only
+    # registers postgres-specific field/index/lookup machinery, it doesn't
+    # require an actual postgres connection.
+    'django.contrib.postgres',
     'jobs',
 ]
 
@@ -135,8 +140,18 @@ STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_DIRS = []
 
-# WhiteNoise configuration
-STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+# WhiteNoise configuration: compressed, content-hashed files served with
+# far-future cache headers. (Django 5.1+ removed the old STATICFILES_STORAGE
+# setting, so it was being silently ignored here.)
+STORAGES = {
+    'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
+    # Falls back to unhashed paths if collectstatic hasn't run, instead of
+    # 500ing every page - see config/storage.py.
+    'staticfiles': {'BACKEND': 'config.storage.ForgivingManifestStaticFilesStorage'},
+}
+# Serve static files straight from each app's static/ directory too, so the
+# unhashed fallback above still resolves when STATIC_ROOT is empty.
+WHITENOISE_USE_FINDERS = True
 
 # Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'

@@ -1,0 +1,16 @@
+{# One language row. n is the row number, or "__N__" inside the <template> that search.html's JS copies. #}
+<div class="repeatable-entry bg-gray-50 p-3 rounded-lg border border-gray-200">
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+        <div>
+            <label class="block text-xs text-gray-600 mb-1" for="language_{{ n }}">Language</label>
+            <input type="text" id="language_{{ n }}" name="language_{{ n }}" placeholder="e.g., English">
+        </div>
+        <div>
+            <label class="block text-xs text-gray-600 mb-1" for="proficiency_{{ n }}">Proficiency</label>
+            <select id="proficiency_{{ n }}" name="proficiency_{{ n }}">
+                {% for value, label in form.PROFICIENCY_CHOICES %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+            </select>
+        </div>
+    </div>
+    {% include "partials/remove_entry_button.html" %}
+</div>
